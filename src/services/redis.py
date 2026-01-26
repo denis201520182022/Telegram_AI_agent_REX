@@ -43,19 +43,29 @@ class RedisService:
             raise e
 
     # --- Работа с анкетами ---
-    async def get_survey_config(self, mode: str) -> Optional[dict]:
-        data = await self._safe_get(f"survey_config:{mode}")
+    async def get_survey_config(self, mode: str) -> Optional[list]:
+        """
+        Возвращает список вопросов.
+        Раньше mode был ключом. Теперь мы сохраним все вопросы под ключом 'all_questions',
+        а фильтровать будем уже в коде бота.
+        Но для совместимости оставим аргумент mode, если вдруг захотим разделить dating.
+        """
+        # Если mode == 'coach', мы достаем полный список вопросов 'coach_questions'
+        key = f"survey_questions:{mode}"
+        data = await self._safe_get(key)
         if data:
             try:
                 return json.loads(data)
             except json.JSONDecodeError:
-                self.log.error("redis_json_decode_error", key=f"survey_config:{mode}")
+                self.log.error("redis_json_decode_error", key=key)
                 return None
         return None
 
-    async def set_survey_config(self, mode: str, config: dict):
-        await self._safe_set(f"survey_config:{mode}", json.dumps(config))
-
+    async def set_survey_config(self, mode: str, config: list):
+        # config теперь это list
+        key = f"survey_questions:{mode}"
+        await self._safe_set(key, json.dumps(config))
+        
     # --- Работа с промптами ---
     async def get_prompt(self, mode: str) -> Optional[str]:
         return await self._safe_get(f"prompt:{mode}")

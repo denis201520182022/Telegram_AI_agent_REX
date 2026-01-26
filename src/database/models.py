@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import BigInteger, String, Boolean, DateTime, ForeignKey, Integer, JSON, Text, Date
+from sqlalchemy import BigInteger, String, Boolean, DateTime, ForeignKey, Integer, JSON, Text, Date, Time
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.sql import func
@@ -20,29 +20,57 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(20), default='user')
     subscription_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     
-    # Геймификация и доступы
+    # Геймификация
     qr_activations_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     natal_chart_credits: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     
-    # --- ТРЕКИНГ (РАЗДЕЛЬНЫЙ) ---
-    is_diet_tracking: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
-    is_trainer_tracking: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # --- НОВЫЕ ПОЛЯ (КОУЧИНГ И ТРЕКИНГ) ---
+    # Режим коуча: 'nutrition' (Питание), 'workout' (Тренировки), 'combined' (Вместе) или None (не выбран)
+    coach_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    
+    # Часовой пояс (например, "Europe/Moscow")
+    timezone: Mapped[str] = mapped_column(String(50), default="UTC", server_default="UTC")
+    
+    # Время, когда бот пишет пользователю (например, 20:00:00)
+    tracking_time: Mapped[datetime.time | None] = mapped_column(Time, nullable=True)
+    
+    # Включен ли трекинг вообще
+    is_tracking_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    
+    # Принял ли политику обработки данных
     has_accepted_policy: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
-    # ----------------------------
+    # --------------------------------------
 
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     
     # Связи
     surveys: Mapped[list["UserSurvey"]] = relationship(back_populates="user")
     qr_activation: Mapped["QRCode"] = relationship(back_populates="activated_by_user", uselist=False)
+    chat_history: Mapped[list["ChatMessage"]] = relationship(back_populates="user")
 
-# 2. QR Коды
+
+# 2. История сообщений (ДЛЯ КОНТЕКСТА ИИ) — НОВАЯ ТАБЛИЦА
+class ChatMessage(Base):
+    __tablename__ = 'chat_messages'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.user_id'))
+    
+    role: Mapped[str] = mapped_column(String(20)) # 'user' или 'assistant'
+    content: Mapped[str] = mapped_column(Text)    # Текст сообщения
+    
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
+    
+    user: Mapped["User"] = relationship(back_populates="chat_history")
+
+
+# 3. QR Коды (Без изменений)
 class QRCode(Base):
     __tablename__ = 'qr_codes'
 
-    code_hash: Mapped[str] = mapped_column(String(64), primary_key=True) # Уникальный хэш
-    batch_id: Mapped[str] = mapped_column(String(50)) # Номер партии
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True) # Глобальный рубильник
+    code_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(50))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     
@@ -51,66 +79,70 @@ class QRCode(Base):
     
     activated_by_user: Mapped["User"] = relationship(back_populates="qr_activation")
 
-# 3. Конфигурация анкет (Версионирование)
+
+# 4. Конфигурация анкет (Без изменений, но будем использовать поле mode для подтипов)
 class SurveyConfig(Base):
     __tablename__ = 'survey_configs'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    mode: Mapped[str] = mapped_column(String(20)) # 'diet', 'fitness', 'dating'
-    version: Mapped[str] = mapped_column(String(50)) # хэш версии
-    
-    # Структура вопросов JSON: [{"q": "Вес?", "type": "int"}, ...]
+    mode: Mapped[str] = mapped_column(String(20)) 
+    version: Mapped[str] = mapped_column(String(50))
     structure: Mapped[dict] = mapped_column(JSON) 
-    
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
 
-# 4. Ответы пользователей
+
+# 5. Ответы пользователей (Добавили current_plan)
 class UserSurvey(Base):
     __tablename__ = 'user_surveys'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey('users.user_id'))
     
-    mode: Mapped[str] = mapped_column(String(20))
+    mode: Mapped[str] = mapped_column(String(20)) # 'coach', 'dating', 'natal'
+    sub_mode: Mapped[str | None] = mapped_column(String(20), nullable=True) # 'nutrition', 'workout', 'combined'
+    
     survey_config_id: Mapped[int] = mapped_column(ForeignKey('survey_configs.id'))
     
-    # Ответы: {"weight": 80, "goal": "loss"}
     answers: Mapped[dict] = mapped_column(JSON)
     
-    # Результат от AI
+    # Сгенерированная рекомендация (старое поле, оставим для совместимости)
     ai_recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
+    # НОВОЕ ПОЛЕ: Текущий активный план, который ИИ должен учитывать
+    current_plan: Mapped[str | None] = mapped_column(Text, nullable=True)
     
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     
     user: Mapped["User"] = relationship(back_populates="surveys")
 
-# 5. Дейтинг (Мэтчи)
+
+# 6. Дейтинг (Без изменений)
 class DatingMatch(Base):
     __tablename__ = 'dating_matches'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    
-    user_id: Mapped[int] = mapped_column(ForeignKey('users.user_id')) # Кто лайкнул
-    target_user_id: Mapped[int] = mapped_column(BigInteger) # Кого лайкнул
-    
-    action: Mapped[str] = mapped_column(String(10)) # 'like', 'dislike'
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.user_id'))
+    target_user_id: Mapped[int] = mapped_column(BigInteger)
+    action: Mapped[str] = mapped_column(String(10))
     is_match: Mapped[bool] = mapped_column(Boolean, default=False)
-    
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
 
-# 6. Ежедневный трекинг
+
+# 7. Ежедневный трекинг (Упростили логику)
 class DailyTracking(Base):
     __tablename__ = 'daily_tracking'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey('users.user_id'))
     
-    # Режим ('diet' или 'trainer')
-    mode: Mapped[str] = mapped_column(String(20), default="diet", server_default="diet") 
+    # mode будет совпадать с coach_mode ('nutrition', 'workout', 'combined')
+    mode: Mapped[str] = mapped_column(String(20)) 
 
-    # ТУТ Я ПОМЕНЯЛ DateTime на Date для строгости
     date: Mapped[datetime.date] = mapped_column(Date, default=func.current_date())
     status: Mapped[str] = mapped_column(String(20)) # 'success', 'partial', 'fail'
+    
+    # Сюда можно сохранять короткий коммент от ИИ, если нужно
+    ai_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
     
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())

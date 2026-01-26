@@ -28,3 +28,4 @@ python-dotenv>=1.0.0
 # Observability (Logging & Metrics)
 structlog>=24.1.0
 prometheus-client>=0.17.0
+pytz==2023.3

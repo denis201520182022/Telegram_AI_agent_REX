@@ -3,20 +3,20 @@ import sys
 import datetime
 from os.path import abspath, dirname
 
-# Пути
+# Пути для импортов
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
 
-from aiogram import Bot, Dispatcher, Router, F
+from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from sqlalchemy import select
 
 from src.config import settings
 from src.database.session import async_session_maker
 from src.database.models import User, QRCode
-from sqlalchemy import select
 from src.services.redis import redis_client
 
 # --- OBSERVABILITY ---
@@ -24,15 +24,17 @@ from src.utils.logger import logger
 from src.utils.metrics import start_metrics_server, USER_UPDATES
 from src.utils.alerting import send_alert
 
-# ИМПОРТЫ РОУТЕРОВ
-from src.bot.keyboards.menu import get_main_menu
-from src.bot.handlers import survey as survey_router
-from src.bot.handlers import dating as dating_router
-from src.bot.handlers import tracking as tracking_router
-from src.bot.handlers import profile as profile_router 
+# --- ИМПОРТЫ РОУТЕРОВ ---
 from src.bot.handlers import admin as admin_router
+from src.bot.handlers import dating as dating_router
+from src.bot.handlers import profile as profile_router 
+from src.bot.handlers import survey as survey_router
+# НОВЫЕ РОУТЕРЫ:
+from src.bot.handlers import menu as menu_router  # Логика кнопок меню
+from src.bot.handlers import coach as coach_router # Чат с коучем
 
 from src.bot.middlewares.check_sub import CheckSubscriptionMiddleware
+from src.bot.keyboards.menu import get_main_menu
 
 # Хелпер для проверки админа
 def is_admin(user_id: int) -> bool:
@@ -67,7 +69,7 @@ async def start_handler(message: Message, command: CommandObject):
 
         # --- ЛОГИКА ДЛЯ АДМИНА (Full Access) ---
         if is_admin(user_id):
-            menu_kb = get_main_menu(natal_credits=999, is_admin=True) # Админу даем визуально 999
+            menu_kb = get_main_menu(natal_credits=999, is_admin=True)
             await message.answer(
                 "👋 Привет, Админ! У вас полный доступ без ограничений.", 
                 reply_markup=menu_kb
@@ -77,7 +79,7 @@ async def start_handler(message: Message, command: CommandObject):
 
         # Получаем меню для обычного юзера
         menu_kb = get_main_menu(
-            natal_credits=user.natal_chart_credits, # <--- ИСПРАВЛЕНО
+            natal_credits=user.natal_chart_credits,
             is_admin=False
         )
 
@@ -117,16 +119,14 @@ async def start_handler(message: Message, command: CommandObject):
             
             # Логика начисления КРЕДИТОВ (каждый 3-й код)
             bonus_msg = ""
-            # Даем кредит ТОЛЬКО если это 5-я активация
             if user.qr_activations_count == 5:
                 user.natal_chart_credits += 1
                 bonus_msg = "\n\n🌟 <b>Поздравляем!</b> Вы активировали 5 кодов! Вам доступна <b>Натальная карта</b> (1 раз)."
             elif user.qr_activations_count < 5:
                 left = 5 - user.qr_activations_count
                 bonus_msg = f"\n\n(Активируйте еще {left} шт., чтобы открыть Натальную карту)"
-            # Если > 5, то ничего не пишем и кредиты не даем
-            # ----------------------------------------
-            # Обновляем подписку
+            
+            # Обновляем подписку (+5 дней)
             if user.subscription_expires_at and user.subscription_expires_at > now:
                 user.subscription_expires_at += datetime.timedelta(days=5)
             else:
@@ -140,7 +140,7 @@ async def start_handler(message: Message, command: CommandObject):
             
             # Обновляем меню с учетом НОВЫХ кредитов
             new_menu_kb = get_main_menu(
-                natal_credits=user.natal_chart_credits, # <--- ИСПРАВЛЕНО
+                natal_credits=user.natal_chart_credits,
                 is_admin=False
             )
             
@@ -148,7 +148,6 @@ async def start_handler(message: Message, command: CommandObject):
                 f"✅ <b>Доступ активирован!</b>\nДействует до: {expires_str}" + bonus_msg,
                 reply_markup=new_menu_kb
             )
-            
             return
 
         # 3. Просто /start без кода
@@ -158,7 +157,7 @@ async def start_handler(message: Message, command: CommandObject):
         if user.subscription_expires_at and user.subscription_expires_at > now:
              await message.answer("🏠 Главное меню:", reply_markup=menu_kb)
         else:
-             await message.answer("👋 Привет! Я REX Bot.\nДля доступа к диетологу и тренировкам отсканируйте QR-код с упаковки.")
+             await message.answer("👋 Привет! Я REX Bot.\nДля доступа к коучу и тренировкам отсканируйте QR-код с упаковки.")
 
 # --- ЗАПУСК ---
 async def main():
@@ -172,27 +171,29 @@ async def main():
     )
     dp = Dispatcher(storage=storage)
 
-    # --- ПОДКЛЮЧЕНИЕ MIDDLEWARE (ВАЖНО!) ---
-    # Ставим его ДО роутеров, чтобы проверять всё
+    # --- ПОДКЛЮЧЕНИЕ MIDDLEWARE ---
     dp.message.middleware(CheckSubscriptionMiddleware())
     dp.callback_query.middleware(CheckSubscriptionMiddleware())
-    # ---------------------------------------
 
-    # ПОДКЛЮЧЕНИЕ РОУТЕРОВ
-    # Порядок критически важен:
-    # 1. Админка (самый приоритет)
-    dp.include_router(admin_router.router)
-    # 2. Функциональные роутеры
-    dp.include_router(tracking_router.router)
-    dp.include_router(dating_router.router)
-    dp.include_router(profile_router.router)
-    dp.include_router(survey_router.router)
+    # --- РЕГИСТРАЦИЯ РОУТЕРОВ ---
+    # Порядок важен!
     
-    # 3. Регистрация команды /start
+    dp.include_router(admin_router.router)
+    
+    # 1. Сначала обрабатываем клики по меню ("AI Коуч")
+    dp.include_router(menu_router.router)
+    
+    # 2. Потом специфичные режимы (Чат с коучем, Анкета)
+    dp.include_router(coach_router.router)  # Ловит текст, если state=chatting
+    dp.include_router(survey_router.router) # Ловит текст, если state=survey
+    
+    # 3. Остальное
+    dp.include_router(dating_router.router)
+    dp.include_router(profile_router.router) # Оставляем для редактирования дейтинг-профиля
+    
+    # Регистрация команды /start
     dp.message.register(start_handler, CommandStart())
     
-    # Echo handler убран. Бот будет молчать на неизвестные сообщения.
-
     logger.info("bot_polling_started")
     try:
         await dp.start_polling(bot)
