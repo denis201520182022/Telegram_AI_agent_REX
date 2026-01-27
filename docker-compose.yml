@@ -5,14 +5,19 @@ services:
     image: edoburu/pgbouncer:latest
     container_name: rex_pgbouncer
     environment:
-      - DB_USER=${POSTGRES_USER:-postgres}
-      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      # Формат: название_бд = host=хост port=порт dbname=имя_бд
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
       - DB_HOST=postgres_db
-      - DB_NAME=${POSTGRES_DB:-rex_db}
+      - DB_NAME=${POSTGRES_DB}
       - POOL_MODE=transaction
       - MAX_CLIENT_CONN=1000
       - DEFAULT_POOL_SIZE=20
-      - AUTH_TYPE=scram-sha-256  # <--- ДОБАВИТЬ ЭТУ СТРОКУ
+      # Это позволяет PgBouncer принимать любые пароли от бота 
+      # и проверять их уже на стороне реального Postgres
+      - AUTH_TYPE=trust
+      # А это позволяет подключаться к самому Postgres
+      - SERVER_TLS_SSLMODE=disable
     ports:
       - "6432:5432"
     depends_on:
