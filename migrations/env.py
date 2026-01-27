@@ -29,7 +29,16 @@ if config.config_file_name is not None:
 
 # ------------------ ПОДМЕНА URL И МЕТАДАННЫХ ------------------
 # 3. Подменяем sqlalchemy.url на тот, что в нашем .env файле
-config.set_main_option("sqlalchemy.url", settings.DB_URL)
+import os
+
+# Пытаемся взять URL из переменной окружения, если её нет - берем из конфига
+cmd_line_url = os.environ.get("DATABASE_URL")
+if cmd_line_url:
+    config.set_main_option("sqlalchemy.url", cmd_line_url)
+else:
+    # Если мы идем через pgbouncer, для миграций подменяем его на прямой адрес базы
+    target_url = settings.DB_URL.replace("pgbouncer", "postgres_db")
+    config.set_main_option("sqlalchemy.url", target_url)
 
 # 4. Указываем метаданные моделей для автогенерации миграций
 target_metadata = Base.metadata
