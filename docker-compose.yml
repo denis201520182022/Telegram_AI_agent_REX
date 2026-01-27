@@ -1,6 +1,23 @@
 services:
   # --- ИНФРАСТРУКТУРА ---
   # Пулер соединений (Прослойка перед БД)
+  # 1. База данных (Postgres)
+  postgres_db:
+    image: postgres:15-alpine
+    container_name: rex_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-rex_db}
+      # Это позволит pgbouncer подключаться без конфликта типов паролей
+      POSTGRES_HOST_AUTH_METHOD: trust 
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Пулер соединений
   pgbouncer:
     image: edoburu/pgbouncer:latest
     container_name: rex_pgbouncer
@@ -12,28 +29,12 @@ services:
       - POOL_MODE=transaction
       - MAX_CLIENT_CONN=1000
       - DEFAULT_POOL_SIZE=20
-      - AUTH_TYPE=md5  # <--- ДОБАВИТЬ ЭТУ СТРОКУ
+      - AUTH_TYPE=trust # Внутри защищенной сети докера ставим trust
     ports:
       - "6432:5432"
     depends_on:
       - postgres_db
     restart: always
-  
-  
-  # 1. База данных (Postgres)
-  postgres_db:
-    image: postgres:15-alpine
-    container_name: rex_postgres
-    restart: always
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-rex_db}
-      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
-    ports:
-      - "5433:5432" # Чтобы можно было подключиться через DBeaver снаружи
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
 
   # 2. Очереди (RabbitMQ)
   rabbitmq:
