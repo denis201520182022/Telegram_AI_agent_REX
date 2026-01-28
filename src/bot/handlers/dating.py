@@ -3,9 +3,11 @@ from aiogram.types import CallbackQuery
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from prometheus_client import Counter
+from sqlalchemy import select, and_, update
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from src.database.session import async_session_maker
+from src.database.models import DatingMatch, User, UserSurvey
 from src.database.models import DatingMatch, User
 from src.bot.keyboards.dating import get_contact_kb
 from src.services.rabbit import send_to_queue

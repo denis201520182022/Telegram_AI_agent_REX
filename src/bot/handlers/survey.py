@@ -279,9 +279,9 @@ async def confirm_survey(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
 
     # Если это НЕ коуч (Дейтинг или Натальная карта), завершаем сразу
-    if mode in ['dating', 'natal']:
+    if mode in ['dating', 'natal', 'horoscope']:
         await _finish_non_coach_survey(callback.message, state)
-        await callback.answer("✅ Анкета сохранена!")
+        await callback.answer("✅ Данные сохранены!")
         return
 
     # Для коуча — стандартная проверка политики и переход к таймзонам
