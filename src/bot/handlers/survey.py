@@ -8,7 +8,7 @@ from sqlalchemy import update
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-from src.bot.handlers.main import is_admin
+from src.utils.admin import is_admin
 from src.bot.keyboards.menu import get_main_menu
 from src.database.session import async_session_maker
 from src.database.models import User
