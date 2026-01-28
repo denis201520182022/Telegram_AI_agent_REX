@@ -3,7 +3,6 @@ import sys
 from collections import defaultdict
 from os.path import abspath, dirname
 
-# Пути
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
 
 from src.services.sheets import fetch_all_data
@@ -15,42 +14,38 @@ async def update_surveys():
     log.info("started")
     
     try:
-        # 1. Получаем данные из Google Sheets
         questions, prompts = await fetch_all_data()
         
-        # 2. Группируем вопросы по режимам
-        # В таблице у нас есть колонка 'category' (common, nutrition, workout, dating, natal)
-        # Нам нужно сохранить их в Redis под соответствующими ключами.
-        
-        # Коуч использует: common + nutrition + workout
-        # Дейтинг использует: common + dating
-        # Натальная карта использует: common + natal
-        
         grouped_questions = defaultdict(list)
-        
-        # Сначала соберем "сырые" категории
         raw_categories = defaultdict(list)
+        
+        # 1. Раскладываем вопросы по "сырым" категориям из таблицы
         for q in questions:
             cat = q.get('category', 'common')
             raw_categories[cat].append(q)
             
-        # Теперь формируем готовые конфиги для режимов бота
-        # --- COACH (Коуч) ---
-        # Включает общие вопросы, питание и спорт.
-        # Фильтрация (что конкретно задавать) происходит уже внутри бота в зависимости от выбора 🥗/🏋️
+        # 2. Формируем конфиги для режимов бота
+        
+        # COACH
         grouped_questions['coach'] = (
             raw_categories['common'] + 
             raw_categories['nutrition'] + 
             raw_categories['workout']
         )
         
-        # --- DATING (Знакомства) ---
+        # DATING
         grouped_questions['dating'] = (
             raw_categories['common'] + 
             raw_categories['dating']
         )
         
-        # --- NATAL (Натальная карта) ---
+        # HOROSCOPE (Простой прогноз)
+        grouped_questions['horoscope'] = (
+            # common не нужен, только дата
+            raw_categories['horoscope'] 
+        )
+        
+        # NATAL (Натальная карта)
         grouped_questions['natal'] = (
             raw_categories['common'] + 
             raw_categories['natal']
@@ -62,7 +57,6 @@ async def update_surveys():
                 await redis_service.set_survey_config(mode, q_list)
                 log.info("config_saved", mode=mode, questions_count=len(q_list))
 
-        # 4. Сохраняем промпты
         if prompts:
             for mode, text in prompts.items():
                 await redis_service.set_prompt(mode, text)

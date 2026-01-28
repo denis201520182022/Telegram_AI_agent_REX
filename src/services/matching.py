@@ -63,6 +63,8 @@ async def run_daily_matching():
                 try:
                     my_id = me.user_id
                     my_data = me.answers or {}
+                    if my_data.get('is_paused'):
+                        continue # Я скрыл анкету, не ищем мне никого
                     
                     # --- Извлекаем предпочтения Ищущего ---
                     my_city = str(my_data.get('city', '')).strip().lower()
@@ -97,6 +99,8 @@ async def run_daily_matching():
                     best_match = None
                     for cand in candidates:
                         cand_data = cand.answers or {}
+                        if cand_data.get('is_paused'):
+                            continue # Кандидат скрыл анкету
                         
                         # 1. Фильтр по городу
                         cand_city = str(cand_data.get('city', '')).strip().lower()

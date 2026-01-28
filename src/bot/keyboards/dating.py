@@ -33,10 +33,11 @@ def get_contact_kb(username: str | None) -> InlineKeyboardMarkup:
     ])
 
 
-def get_dating_menu() -> ReplyKeyboardMarkup:
+def get_dating_menu(is_paused: bool = False) -> ReplyKeyboardMarkup:
+    status_btn = "▶️ Возобновить поиск" if is_paused else "⏸ Приостановить поиск"
     return ReplyKeyboardMarkup(
-        keyboard=[
-             
+        keyboard=[ 
+            [KeyboardButton(text=status_btn)],
             [KeyboardButton(text="📝 Изменить анкету"), KeyboardButton(text="🔙 Назад")]
         ],
         resize_keyboard=True,

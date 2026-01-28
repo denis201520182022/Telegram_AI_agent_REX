@@ -134,6 +134,7 @@ async def _ask_question(message: Message, state: FSMContext):
     data = await state.get_data()
     questions = data['questions']
     step = data['current_step']
+    mode = data.get('survey_mode', 'coach') # Получаем режим
     msg_id = data.get('msg_to_edit')
     
     if step >= len(questions):
@@ -145,13 +146,21 @@ async def _ask_question(message: Message, state: FSMContext):
     total = len(questions)
     filled = step
     percent = int((filled / total) * 100)
-    # Формируем полоску: 🟦🟦⬜️⬜️
     bar_size = 10
     filled_size = int((filled / total) * bar_size)
     progress_bar = "🟦" * filled_size + "⬜️" * (bar_size - filled_size)
     
+    # --- ДИНАМИЧЕСКИЙ ЗАГОЛОВОК ---
+    titles = {
+        "coach": "🏃 <b>Анкета Коуча</b>",
+        "dating": "❤️ <b>Анкета Знакомств</b>",
+        "natal": "📜 <b>Натальная Карта</b>",
+        "horoscope": "📅 <b>Дата рождения</b>" # <--- Добавили
+    }
+    title = titles.get(mode, "📝 <b>Анкета</b>")
+    
     text = (
-        f"📝 <b>Анкета коуча</b>\n"
+        f"{title}\n"
         f"Этап: {step + 1} из {total}\n"
         f"{progress_bar} {percent}%\n\n"
         f"❓ <b>{q['text']}</b>"
@@ -416,6 +425,7 @@ async def cancel_survey(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+
 async def _finish_non_coach_survey(message: Message, state: FSMContext):
     data = await state.get_data()
     mode = data['survey_mode']
@@ -423,9 +433,7 @@ async def _finish_non_coach_survey(message: Message, state: FSMContext):
     user_id = message.chat.id
 
     async with async_session_maker() as session:
-        # Пытаемся найти существующую запись, чтобы обновить, а не создавать дубль
-        # (Хотя id у нас автоинкремент, логичнее иметь одну активную анкету на режим)
-        # Для простоты MVP создаем новую, старую игнорируем при выборке (берем последнюю)
+        # Сохраняем ответы в БД
         survey = UserSurvey(
             user_id=user_id,
             mode=mode,
@@ -437,21 +445,27 @@ async def _finish_non_coach_survey(message: Message, state: FSMContext):
         survey_id = survey.id
         await session.commit()
 
-    if mode == 'natal':
-        from src.database.models import User
-        # Проверяем кредиты перед запуском генерации
-        async with async_session_maker() as session:
-            user = await session.get(User, user_id)
-            # Тут можно добавить логику списания, если это ПЕРВЫЙ раз. 
-            # Но так как мы уже проверили кредиты при входе, считаем что ок.
-            # Если юзер "Изменял данные", кредит второй раз не списываем (сложная логика, пока опустим).
-        
+    # --- РАЗВИЛКА ПО РЕЖИМАМ ---
+    
+    if mode == 'horoscope':
+        # Просто сохранили и вернули меню. НИКАКОЙ ГЕНЕРАЦИИ ЧЕРЕЗ AI WORKER.
+        from src.bot.keyboards.horoscope import get_astro_menu
         await message.answer(
-            "✨ <b>Данные приняты!</b>\nЗвезды выстраиваются в ряд... Результат придет уведомлением.", 
+            "✅ <b>Дата рождения сохранена!</b>\nТеперь вы можете получать ежедневные прогнозы.", 
+            parse_mode="HTML",
+            reply_markup=get_astro_menu()
+        )
+
+    elif mode == 'natal':
+        # А вот тут запускаем тяжелую генерацию
+        await message.answer(
+            "✨ <b>Данные приняты!</b>\nЗвезды выстраиваются в ряд... Я пришлю Натальную карту, как только она будет готова (1-2 минуты).", 
             parse_mode="HTML",
             reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 Назад")]], resize_keyboard=True)
         )
         
+        # Списываем кредит (если не админ) - логику можно добавить тут или оставить в menu entry
+        # Для надежности шлем задачу
         task = {"user_id": user_id, "mode": "natal", "answers": answers, "survey_id": survey_id}
         await send_to_queue("q_ai_generation", task)
 

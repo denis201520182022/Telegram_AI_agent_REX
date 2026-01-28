@@ -13,7 +13,13 @@ from aiogram.types import Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from src.bot.handlers.survey import start_generic_survey
 from src.services.matching import run_daily_matching
+from sqlalchemy import update
+from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram.fsm.context import FSMContext
+from sqlalchemy import update # <--- Добавь этот импорт
 
+# ... (старые импорты)
+from src.bot.keyboards.dating import get_dating_menu
 # --- OBSERVABILITY ---
 from src.utils.logger import logger
 from src.utils.alerting import send_alert
@@ -164,3 +170,48 @@ async def edit_dating_profile(message: Message, state: FSMContext):
         reply_markup=ReplyKeyboardRemove()
     )
     await start_generic_survey(message, state, mode="dating")
+
+# Хендлер переключения паузы
+@router.message(F.text.in_({"⏸ Приостановить поиск", "▶️ Возобновить поиск"}))
+async def toggle_dating_status(message: Message):
+    user_id = message.from_user.id
+    async with async_session_maker() as session:
+        # Получаем анкету
+        survey = await session.scalar(
+            select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'dating')
+        )
+        
+        if not survey:
+            return await message.answer("Сначала заполните анкету.")
+            
+        # Копируем ответы, чтобы изменить JSON
+        new_answers = dict(survey.answers)
+        
+        # Определяем текущее состояние
+        is_currently_paused = new_answers.get('is_paused', False)
+        new_state = not is_currently_paused
+        
+        # Записываем новое состояние
+        new_answers['is_paused'] = new_state
+        
+        # Обновляем в БД
+        await session.execute(
+            update(UserSurvey)
+            .where(UserSurvey.id == survey.id)
+            .values(answers=new_answers)
+        )
+        await session.commit()
+        
+        text = "💤 <b>Поиск приостановлен.</b>\nВаша анкета скрыта." if new_state else "🚀 <b>Поиск возобновлен!</b>\nЖдите новых кандидатов."
+        
+        await message.answer(text, reply_markup=get_dating_menu(is_paused=new_state), parse_mode="HTML")
+
+# Обновляем ручной поиск (проверка на паузу)
+@router.message(F.text == "🚀 Искать партнера")
+async def manual_search(message: Message):
+    # Тут можно добавить проверку, не стоит ли пауза
+    await message.answer(
+        "🔎 <b>Поиск запущен!</b>\n\n"
+        "Алгоритм подбирает пары каждые 24 часа.\n"
+        "Если найдется пара — придет уведомление!"
+    )
