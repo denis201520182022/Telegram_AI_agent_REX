@@ -249,7 +249,7 @@ async def _finish_questions(message: Message, state: FSMContext):
         short_q = (q_text[:30] + '..') if len(q_text) > 30 else q_text
         summary += f"▫️ <i>{short_q}</i>: <b>{val}</b>\n"
         
-    summary += "\nВсё верно? Генерируем план?"
+    summary += "\nПроверьте"
     
     msg_id = data.get('msg_to_edit')
     if msg_id:

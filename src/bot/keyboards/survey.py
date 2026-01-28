@@ -34,7 +34,7 @@ def get_options_keyboard(options: list) -> InlineKeyboardMarkup:
 # 3. Подтверждение анкеты
 def get_confirm_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Всё верно, создаем план!", callback_data="survey_confirm")],
+        [InlineKeyboardButton(text="✅ Всё верно", callback_data="survey_confirm")],
         [InlineKeyboardButton(text="🔄 Заполнить заново", callback_data="survey_restart")]
     ])
 

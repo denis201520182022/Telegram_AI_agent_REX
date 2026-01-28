@@ -178,7 +178,6 @@ async def edit_dating_profile(message: Message, state: FSMContext):
 async def toggle_dating_status(message: Message):
     user_id = message.from_user.id
     async with async_session_maker() as session:
-        # Получаем анкету
         survey = await session.scalar(
             select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'dating')
         )
@@ -186,17 +185,13 @@ async def toggle_dating_status(message: Message):
         if not survey:
             return await message.answer("Сначала заполните анкету.")
             
-        # Копируем ответы, чтобы изменить JSON
+        # Определяем желаемое состояние по тексту кнопки, а не инвертируем базу
+        # Если нажали "Приостановить" -> значит ставим is_paused = True
+        should_be_paused = (message.text == "⏸ Приостановить поиск")
+        
         new_answers = dict(survey.answers)
+        new_answers['is_paused'] = should_be_paused
         
-        # Определяем текущее состояние
-        is_currently_paused = new_answers.get('is_paused', False)
-        new_state = not is_currently_paused
-        
-        # Записываем новое состояние
-        new_answers['is_paused'] = new_state
-        
-        # Обновляем в БД
         await session.execute(
             update(UserSurvey)
             .where(UserSurvey.id == survey.id)
@@ -204,10 +199,17 @@ async def toggle_dating_status(message: Message):
         )
         await session.commit()
         
-        text = "💤 <b>Поиск приостановлен.</b>\nВаша анкета скрыта." if new_state else "🚀 <b>Поиск возобновлен!</b>\nЖдите новых кандидатов."
+        if should_be_paused:
+            text = "💤 <b>Поиск приостановлен.</b>\nВаша анкета скрыта от других участников."
+        else:
+            text = "🚀 <b>Поиск возобновлен!</b>\nМы снова показываем вашу анкету кандидатам."
         
-        await message.answer(text, reply_markup=get_dating_menu(is_paused=new_state), parse_mode="HTML")
-
+        await message.answer(
+            text, 
+            reply_markup=get_dating_menu(is_paused=should_be_paused), 
+            parse_mode="HTML"
+        )
+        
 # Обновляем ручной поиск (проверка на паузу)
 @router.message(F.text == "🚀 Искать партнера")
 async def manual_search(message: Message):
