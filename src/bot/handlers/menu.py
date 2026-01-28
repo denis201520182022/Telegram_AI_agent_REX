@@ -2,12 +2,15 @@ import json
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from sqlalchemy import select, desc
 
 # База и модели
 from src.database.session import async_session_maker
 from src.database.models import UserSurvey, User
 from src.bot.states import CoachState, SurveyState
+from src.bot.keyboards.dating import get_dating_menu
 
 # Клавиатуры
 from src.bot.keyboards.coach import get_coach_menu 
@@ -21,6 +24,8 @@ from src.services.rabbit import send_to_queue
 # Хендлеры
 from src.bot.handlers.survey import start_coach_survey, start_generic_survey
 from src.utils.admin import is_admin
+from aiogram.types import ReplyKeyboardRemove
+from src.bot.keyboards.horoscope import get_astro_menu
 
 router = Router()
 
@@ -47,6 +52,7 @@ async def coach_mode_entry(message: Message, state: FSMContext):
             # Если плана нет или режим не выбран — на анкету
             await start_coach_survey(message, state)
 
+
 @router.message(F.text == "❤️ Найти партнера")
 async def dating_mode_entry(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -54,83 +60,151 @@ async def dating_mode_entry(message: Message, state: FSMContext):
         survey = await session.scalar(
             select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'dating')
         )
+        
         if survey:
+            # Анкета есть — показываем меню дейтинга
             await message.answer(
-                "✅ <b>Ваша анкета знакомств активна!</b>\n\n"
-                "Раз в сутки я буду присылать вам подходящего партнера на основе ваших интересов.\n"
-                "<i>Изменить анкету можно будет позже в настройках профиля.</i>",
+                "❤️ <b>Режим знакомств</b>\n\n"
+                "Ваша анкета активна. Выберите действие:",
+                reply_markup=get_dating_menu(),
                 parse_mode="HTML"
             )
         else:
-            await message.answer("Для участия в знакомствах нужно заполнить небольшую анкету.")
+            # Анкеты нет — убираем меню и запускаем опрос
+            await message.answer(
+                "Чтобы найти партнера, нужно создать профиль.",
+                reply_markup=ReplyKeyboardRemove()
+            )
             await start_generic_survey(message, state, mode="dating")
+# --- ЛОГИКА АСТРОЛОГА ---
 
 @router.message(F.text == "🔮 Астро-прогноз")
 async def horoscope_entry(message: Message, state: FSMContext):
     user_id = message.from_user.id
     async with async_session_maker() as session:
-        # Проверяем, есть ли данные рождения (анкета 'natal')
+        # Проверяем, есть ли данные рождения
         survey = await session.scalar(
             select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'natal')
         )
         
         if survey and survey.answers:
-            # Извлекаем дату из анкеты
-            b_date_str = survey.answers.get('birth_date') # Ожидаем YYYY-MM-DD
-            try:
-                from datetime import datetime
-                b_date = datetime.strptime(b_date_str, "%Y-%m-%d").date()
-                sign_en = get_zodiac_sign(b_date)
-                sign_ru = RUS_SIGNS.get(sign_en, "Зодиак")
-                
-                # Берем прогноз из Redis (обновляется планировщиком в 8 утра)
-                prediction = await redis_service.get(f"horoscope_daily:{sign_en}")
-                
-                if prediction:
-                    # У нас там 3 варианта через |, берем один случайный
-                    variants = prediction.split('|')
-                    import random
-                    text = random.choice(variants).strip()
-                    await message.answer(f"🔮 <b>Прогноз для знака {sign_ru}:</b>\n\n{text}", parse_mode="HTML")
-                else:
-                    await message.answer(f"🔮 <b>{sign_ru}:</b> Ваш прогноз на сегодня подготавливается. Попробуйте чуть позже.")
-            except Exception:
-                await message.answer("Ошибка в данных рождения. Перезаполните анкету астролога.")
-                await start_generic_survey(message, state, mode="natal")
+            # Если данные есть -> показываем меню Астролога
+            await message.answer(
+                "🌌 <b>Режим Астролога</b>\n\n"
+                "Я знаю ваши данные. Выберите действие:",
+                reply_markup=get_astro_menu(), # Клавиатура Астролога
+                parse_mode="HTML"
+            )
         else:
-            await message.answer("Чтобы я мог составить прогноз, мне нужно знать вашу дату рождения.")
+            # Данных нет -> Запускаем анкету
+            await message.answer(
+                "👋 Чтобы давать точные прогнозы, мне нужно узнать дату вашего рождения.",
+                reply_markup=ReplyKeyboardRemove() # Убираем главное меню
+            )
             await start_generic_survey(message, state, mode="natal")
+
+@router.message(F.text == "✨ Получить прогноз на сегодня")
+async def get_daily_forecast(message: Message):
+    user_id = message.from_user.id
+    async with async_session_maker() as session:
+        survey = await session.scalar(
+            select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'natal')
+        )
+        
+        if not survey or not survey.answers:
+            await message.answer("Сначала заполните данные.", reply_markup=get_astro_menu())
+            return
+
+        b_date_str = survey.answers.get('birth_date')
+        try:
+            from datetime import datetime
+            b_date = datetime.strptime(b_date_str, "%Y-%m-%d").date()
+            sign_en = get_zodiac_sign(b_date)
+            sign_ru = RUS_SIGNS.get(sign_en, "Зодиак")
+            
+            # Получаем прогноз
+            prediction = await redis_service.get(f"horoscope_daily:{sign_en}")
+            
+            if prediction:
+                variants = prediction.split('|')
+                import random
+                text = random.choice(variants).strip()
+                await message.answer(f"🔮 <b>{sign_ru}:</b>\n\n{text}", parse_mode="HTML")
+            else:
+                await message.answer(f"🔮 <b>{sign_ru}:</b> Звезды еще не сошлись. Попробуйте через 5 минут.")
+        except Exception:
+            await message.answer("Ошибка данных. Нажмите 'Изменить данные'.")
+
+@router.message(F.text == "🔄 Изменить данные")
+async def change_astro_data(message: Message, state: FSMContext):
+    await message.answer(
+        "🔄 Заполняем данные заново...",
+        reply_markup=ReplyKeyboardRemove() # Убираем кнопки, чтобы не мешали анкете
+    )
+    await start_generic_survey(message, state, mode="natal")
+
+@router.message(F.text == "🔙 Назад")
+async def back_to_main(message: Message, state: FSMContext):
+    # Универсальная кнопка "Назад", которая вернет в главное меню
+    await state.clear()
+    user_id = message.from_user.id
+    
+    # Чтобы корректно отрисовать меню (админ/кредиты), нужно проверить юзера
+    async with async_session_maker() as session:
+        user = await session.get(User, user_id)
+        credits = user.natal_chart_credits if user else 0
+        admin_status = is_admin(user_id)
+
+    await message.answer(
+        "🏠 Главное меню",
+        reply_markup=get_main_menu(natal_credits=credits, is_admin=admin_status)
+    )
+
+ # --- НАТАЛЬНАЯ КАРТА ---
 
 @router.message(F.text.contains("🌟 Натальная карта"))
 async def natal_chart_entry(message: Message, state: FSMContext):
     user_id = message.from_user.id
     admin_status = is_admin(user_id)
     
+    # Простая клавиатура "Назад" для этого режима
+    kb_back = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🔙 Назад")]], 
+        resize_keyboard=True
+    )
+
     async with async_session_maker() as session:
         user = await session.get(User, user_id)
         
-        # Проверка прав доступа
+        # Проверка прав (5 QR или Админ)
         if admin_status or (user and user.natal_chart_credits > 0):
-            # 1. Проверяем, заполнена ли анкета рождения
             survey = await session.scalar(
                 select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'natal')
             )
             
             if not survey:
-                await message.answer("Для составления натальной карты сначала заполните данные рождения.")
+                # Анкеты нет
+                await message.answer(
+                    "Для расчета натальной карты нужны дата и время рождения.", 
+                    reply_markup=ReplyKeyboardRemove()
+                )
                 return await start_generic_survey(message, state, mode="natal")
             
-            # 2. Если анкета есть, проверяем, есть ли уже готовая рекомендация
+            # Анкета есть
             if survey.ai_recommendation:
+                # Результат уже был сгенерирован
                 await message.answer(
                     f"✨ <b>Ваша Натальная карта:</b>\n\n{survey.ai_recommendation}",
+                    reply_markup=kb_back, # Даем возможность выйти
                     parse_mode="HTML"
                 )
             else:
-                # 3. Если анкету заполнил, но расчет еще не делали (или в очереди)
-                await message.answer("✨ <b>Начинаю глубокий анализ...</b>\nЗвезды выстраиваются в ряд. Это займет около минуты.")
+                # Анкету заполнил, но генерацию еще не запускал (редкий кейс, но обработаем)
+                await message.answer(
+                    "✨ <b>Генерирую карту...</b>\nЭто займет около минуты. Я пришлю уведомление, когда будет готово.",
+                    reply_markup=kb_back
+                )
                 
-                # Отправляем задачу в очередь AI Worker (один раз)
                 task = {
                     "user_id": user_id,
                     "mode": "natal",
@@ -139,12 +213,12 @@ async def natal_chart_entry(message: Message, state: FSMContext):
                 }
                 await send_to_queue("q_ai_generation", task)
                 
-                # Списываем кредит (если не админ)
+                # Списываем кредит
                 if not admin_status:
                     user.natal_chart_credits -= 1
                     await session.commit()
         else:
-            await message.answer("🔒 <b>Натальная карта заблокирована</b>\n\nАктивируйте 5 QR-кодов, чтобы получить 1 расчет.")
+            await message.answer("🔒 <b>Доступ закрыт.</b>\nНужно активировать 5 QR-кодов.")
 
 @router.message(F.text == "ℹ️ Справка")
 async def help_handler(message: Message):

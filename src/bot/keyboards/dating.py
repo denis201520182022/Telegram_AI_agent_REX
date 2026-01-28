@@ -1,4 +1,5 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 def get_dating_kb(target_user_id: int) -> InlineKeyboardMarkup:
     """
@@ -30,3 +31,14 @@ def get_contact_kb(username: str | None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=button_text, url=url)]
     ])
+
+
+def get_dating_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+             
+            [KeyboardButton(text="📝 Изменить анкету"), KeyboardButton(text="🔙 Назад")]
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Режим знакомств"
+    )

@@ -26,7 +26,7 @@ def get_main_menu(natal_credits: int = 0, is_admin: bool = False) -> ReplyKeyboa
 
     # Ряд 4: Профиль и Справка
     row4 = [
-        KeyboardButton(text="👤 Мой профиль"),
+        
         KeyboardButton(text="ℹ️ Справка")
     ]
     

@@ -3,11 +3,16 @@ from aiogram.types import CallbackQuery
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from prometheus_client import Counter
-
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from src.database.session import async_session_maker
 from src.database.models import DatingMatch, User
 from src.bot.keyboards.dating import get_contact_kb
 from src.services.rabbit import send_to_queue
+from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram.fsm.context import FSMContext
+from src.bot.handlers.survey import start_generic_survey
+from src.services.matching import run_daily_matching
 
 # --- OBSERVABILITY ---
 from src.utils.logger import logger
@@ -151,3 +156,11 @@ async def process_dislike(callback: CallbackQuery):
         logger.error("dating_dislike_error", error=str(e), user_id=callback.from_user.id)
         await send_alert(e, context="Dating Dislike Handler")
         await callback.answer("Ошибка", show_alert=True)
+
+@router.message(F.text == "📝 Изменить анкету")
+async def edit_dating_profile(message: Message, state: FSMContext):
+    await message.answer(
+        "🔄 Обновляем анкету знакомств...",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await start_generic_survey(message, state, mode="dating")

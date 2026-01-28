@@ -5,6 +5,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import update
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # Импорты проекта
 from src.database.session import async_session_maker
@@ -392,7 +394,6 @@ async def cancel_survey(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("❌ Анкета отменена.")
     await callback.answer()
 
-
 async def _finish_non_coach_survey(message: Message, state: FSMContext):
     data = await state.get_data()
     mode = data['survey_mode']
@@ -400,6 +401,9 @@ async def _finish_non_coach_survey(message: Message, state: FSMContext):
     user_id = message.chat.id
 
     async with async_session_maker() as session:
+        # Пытаемся найти существующую запись, чтобы обновить, а не создавать дубль
+        # (Хотя id у нас автоинкремент, логичнее иметь одну активную анкету на режим)
+        # Для простоты MVP создаем новую, старую игнорируем при выборке (берем последнюю)
         survey = UserSurvey(
             user_id=user_id,
             mode=mode,
@@ -412,9 +416,29 @@ async def _finish_non_coach_survey(message: Message, state: FSMContext):
         await session.commit()
 
     if mode == 'natal':
-        await message.edit_text("✨ <b>Данные получены!</b>\nЗвезды начинают выстраиваться в ряд... Натальная карта будет готова в течение минуты.", parse_mode="HTML")
-        await send_to_queue("q_ai_generation", {"user_id": user_id, "mode": "natal", "answers": answers, "survey_id": survey_id})
-    else:
-        await message.edit_text("✅ <b>Анкета сохранена!</b>\nТеперь вы будете участвовать в ежедневном поиске партнеров.", parse_mode="HTML")
+        from src.database.models import User
+        # Проверяем кредиты перед запуском генерации
+        async with async_session_maker() as session:
+            user = await session.get(User, user_id)
+            # Тут можно добавить логику списания, если это ПЕРВЫЙ раз. 
+            # Но так как мы уже проверили кредиты при входе, считаем что ок.
+            # Если юзер "Изменял данные", кредит второй раз не списываем (сложная логика, пока опустим).
+        
+        await message.answer(
+            "✨ <b>Данные приняты!</b>\nЗвезды выстраиваются в ряд... Результат придет уведомлением.", 
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 Назад")]], resize_keyboard=True)
+        )
+        
+        task = {"user_id": user_id, "mode": "natal", "answers": answers, "survey_id": survey_id}
+        await send_to_queue("q_ai_generation", task)
+
+    elif mode == 'dating':
+        from src.bot.keyboards.dating import get_dating_menu
+        await message.answer(
+            "✅ <b>Анкета знакомств обновлена!</b>", 
+            parse_mode="HTML",
+            reply_markup=get_dating_menu()
+        )
 
     await state.clear()
