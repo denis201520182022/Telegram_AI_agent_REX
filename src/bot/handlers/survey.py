@@ -8,6 +8,11 @@ from sqlalchemy import update
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
+from src.bot.handlers.main import is_admin
+from src.bot.keyboards.menu import get_main_menu
+from src.database.session import async_session_maker
+from src.database.models import User
+
 # Импорты проекта
 from src.database.session import async_session_maker
 from src.database.models import User, UserSurvey
@@ -390,8 +395,25 @@ async def finish_setup(callback: CallbackQuery, state: FSMContext):
 # --- ОТМЕНА ---
 @router.callback_query(F.data == "cancel_survey")
 async def cancel_survey(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
     await state.clear()
-    await callback.message.edit_text("❌ Анкета отменена.")
+    
+    # Восстанавливаем Главное Меню
+    async with async_session_maker() as session:
+        user = await session.get(User, user_id)
+        credits = user.natal_chart_credits if user else 0
+        admin_status = is_admin(user_id)
+
+    # Удаляем сообщение с вопросом, чтобы не засорять чат, или редактируем его
+    try:
+        await callback.message.delete()
+    except:
+        pass
+        
+    await callback.message.answer(
+        "❌ Анкета прервана.\n🏠 Возвращаемся в главное меню.", 
+        reply_markup=get_main_menu(natal_credits=credits, is_admin=admin_status)
+    )
     await callback.answer()
 
 async def _finish_non_coach_survey(message: Message, state: FSMContext):
