@@ -99,30 +99,54 @@ async def run_daily_matching():
                     best_match = None
                     for cand in candidates:
                         cand_data = cand.answers or {}
-                        if cand_data.get('is_paused'):
-                            continue # Кандидат скрыл анкету
                         
-                        # 1. Фильтр по городу
+                        # 0. Проверка на паузу
+                        if cand_data.get('is_paused'):
+                            continue
+
+                        # 1. Город (строгое совпадение)
                         cand_city = str(cand_data.get('city', '')).strip().lower()
                         if my_city and cand_city and my_city not in cand_city and cand_city not in my_city:
                             continue
 
-                        # 2. Фильтр по полу
+                        # 2. ПОЛ (Исправленная логика)
                         cand_gender = str(cand_data.get('gender', '')).lower()
-                        if pref_gender and pref_gender not in cand_gender:
+                        
+                        # Если я ищу НЕ "любой" и пол кандидата не совпадает с моим запросом -> мимо
+                        if 'любой' not in pref_gender and pref_gender not in cand_gender:
+                            continue
+                            
+                        # ВАЖНО: Проверяем, ищет ли КАНДИДАТ меня?
+                        cand_pref_gender = str(cand_data.get('partner_gender', '')).lower()
+                        # Если кандидат ищет НЕ "любой" и мой пол не совпадает с его запросом -> мимо
+                        if 'любой' not in cand_pref_gender and cand_pref_gender not in my_gender:
                             continue
 
-                        # 3. Фильтр по возрасту
+                        # 3. ВОЗРАСТ (Диапазоны)
                         cand_age = _parse_int(cand_data.get('age'))
+                        
+                        # Подхожу ли я кандидату по возрасту?
+                        cand_min = _parse_int(cand_data.get('partner_age_min'), 18)
+                        cand_max = _parse_int(cand_data.get('partner_age_max'), 99)
+                        
+                        # Мой возраст (нужно достать из my_data)
+                        my_age = _parse_int(my_data.get('age'))
+                        
+                        # Проверка: Я подхожу ЕМУ? И Он подходит МНЕ?
                         if not (pref_age_min <= cand_age <= pref_age_max):
                             continue
+                        if not (cand_min <= my_age <= cand_max):
+                            continue
 
-                        # 4. Фильтр по интересам (спорт)
+                        # 4. СПОРТ
+                        # Так как теперь спорт это кнопка (одно значение), сравниваем проще
+                        # Но оставим логику set intersection на случай, если там старые данные или список
                         cand_sports = _normalize_list(cand_data.get('sports'))
                         if my_sports and cand_sports:
                             if not (my_sports & cand_sports):
                                 continue
 
+                        # Все проверки пройдены!
                         best_match = cand
                         break
                     

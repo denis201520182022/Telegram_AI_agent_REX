@@ -169,6 +169,12 @@ async def _ask_question(message: Message, state: FSMContext):
     kb = None
     if q['type'] == 'button' and q.get('options'):
         kb = get_options_keyboard(q['options'])
+        
+    elif q['type'] == 'photo':
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➡️ Пропустить (без фото)", callback_data="skip_photo")],
+            [InlineKeyboardButton(text="❌ Прервать", callback_data="cancel_survey")]
+        ])
     else:
         kb = get_cancel_kb()
 
@@ -194,6 +200,19 @@ async def process_button_answer(callback: CallbackQuery, state: FSMContext):
     answer = callback.data[4:] # ans_Мужской -> Мужской
     await _save_answer_and_next(callback.message, state, answer)
     await callback.answer()
+# Обработка фото (если тип вопроса 'photo')
+@router.message(SurveyState.in_progress, F.photo)
+async def process_photo_answer(message: Message, state: FSMContext):
+    # Берем ID самого большого фото
+    photo_id = message.photo[-1].file_id
+    await _save_answer_and_next(message, state, photo_id)
+
+# Обработка кнопки "Пропустить" для фото
+@router.callback_query(SurveyState.in_progress, F.data == "skip_photo")
+async def process_skip_photo(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    # Сохраняем None, значит фото нет
+    await _save_answer_and_next(callback.message, state, None)
 
 @router.message(SurveyState.in_progress)
 async def process_text_answer(message: Message, state: FSMContext):
