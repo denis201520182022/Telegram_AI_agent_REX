@@ -84,15 +84,27 @@ async def run_daily_matching():
                     seen_stmt = select(DatingMatch.target_user_id).where(DatingMatch.user_id == my_id)
                     seen_ids = (await session.execute(seen_stmt)).scalars().all()
                     
-                    # Ищем подходящих кандидатов
-                    stmt_candidates = select(UserSurvey).join(User).where(
+                    # Ищем только ПОСЛЕДНЮЮ анкету для каждого пользователя
+                    # (Используем подзапрос для фильтрации актуальных записей)
+                    from sqlalchemy import func
+                    subq_latest = select(
+                        UserSurvey.user_id, 
+                        func.max(UserSurvey.created_at).label('max_date')
+                    ).where(UserSurvey.mode == 'dating').group_by(UserSurvey.user_id).subquery()
+
+                    stmt_candidates = select(UserSurvey).join(
+                        subq_latest, 
                         and_(
-                            UserSurvey.mode == 'dating',
+                            UserSurvey.user_id == subq_latest.c.user_id,
+                            UserSurvey.created_at == subq_latest.c.max_date
+                        )
+                    ).join(User).where(
+                        and_(
                             User.subscription_expires_at > func.now(),
                             UserSurvey.user_id != my_id,
                             UserSurvey.user_id.not_in(seen_ids) if seen_ids else True
                         )
-                    ).limit(30) # Берем небольшую выборку для детальной фильтрации
+                    ).limit(30)
                     
                     candidates = (await session.execute(stmt_candidates)).scalars().all()
                     
@@ -171,6 +183,11 @@ async def run_daily_matching():
                     
                     # Проверяем наличие фото, чтобы не было ошибки при отправке
                     photo = cand_data.get('photo')
+                    log.info("match_found", 
+                             my_id=my_id, 
+                             candidate_id=best_match.user_id, 
+                             has_photo=bool(photo),  # <--- Покажет True/False в логах
+                             photo_id=photo)
                     
                     await send_to_queue("q_notifications", {
                         "user_id": my_id,
