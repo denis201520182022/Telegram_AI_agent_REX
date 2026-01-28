@@ -3,7 +3,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select, desc, update
-
+from src.utils.admin import is_admin
 from src.bot.states import CoachState, SurveyState
 from src.database.session import async_session_maker
 from src.database.models import ChatMessage, UserSurvey, User
@@ -60,7 +60,7 @@ async def exit_coach_mode(message: Message, state: FSMContext):
     await state.clear()
     
     from src.bot.keyboards.menu import get_main_menu
-    from src.bot.handlers.main import is_admin
+    
     
     async with async_session_maker() as session:
         user = await session.get(User, user_id)

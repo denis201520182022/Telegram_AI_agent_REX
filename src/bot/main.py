@@ -13,7 +13,7 @@ from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from sqlalchemy import select
-
+from src.utils.admin import is_admin
 from src.config import settings
 from src.database.session import async_session_maker
 from src.database.models import User, QRCode
@@ -35,13 +35,6 @@ from src.bot.handlers import coach as coach_router
 from src.bot.middlewares.check_sub import CheckSubscriptionMiddleware
 from src.bot.keyboards.menu import get_main_menu
 
-def is_admin(user_id: int) -> bool:
-    """Проверяет, является ли пользователь администратором."""
-    try:
-        admin_ids = [int(x.strip()) for x in settings.ADMIN_IDS.split(',')]
-        return user_id in admin_ids
-    except Exception:
-        return False
 
 async def start_handler(message: Message, command: CommandObject):
     """

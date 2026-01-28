@@ -1,11 +1,11 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
 from src.database.session import async_session_maker
 from src.database.models import User
 from src.bot.keyboards.menu import get_main_menu
-from src.bot.handlers.main import is_admin
+from src.utils.admin import is_admin
 from src.bot.handlers.survey import start_generic_survey, start_coach_survey
 
 # --- OBSERVABILITY ---

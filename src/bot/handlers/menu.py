@@ -20,7 +20,7 @@ from src.services.rabbit import send_to_queue
 
 # Хендлеры
 from src.bot.handlers.survey import start_coach_survey, start_generic_survey
-from src.bot.handlers.main import is_admin
+from src.utils.admin import is_admin
 
 router = Router()
 
