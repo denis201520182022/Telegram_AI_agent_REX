@@ -2,6 +2,8 @@ import asyncio
 import re
 from sqlalchemy import select, and_, func
 from prometheus_client import Counter
+# Строка 3
+from sqlalchemy import select, and_, func
 
 from src.database.session import async_session_maker
 from src.database.models import UserSurvey, DatingMatch, User
@@ -86,7 +88,7 @@ async def run_daily_matching():
                     
                     # Ищем только ПОСЛЕДНЮЮ анкету для каждого пользователя
                     # (Используем подзапрос для фильтрации актуальных записей)
-                    from sqlalchemy import func
+                    
                     subq_latest = select(
                         UserSurvey.user_id, 
                         func.max(UserSurvey.created_at).label('max_date')
