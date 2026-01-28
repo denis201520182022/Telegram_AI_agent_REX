@@ -153,7 +153,7 @@ async def _ask_question(message: Message, state: FSMContext):
     # --- ДИНАМИЧЕСКИЙ ЗАГОЛОВОК ---
     titles = {
         "coach": "🏃 <b>Анкета Коуча</b>",
-        "dating": "❤️ <b>Анкета Знакомств</b>",
+        "dating": "🤝 <b>Анкета Знакомств</b>",
         "natal": "📜 <b>Натальная Карта</b>",
         "horoscope": "📅 <b>Дата рождения</b>" # <--- Добавили
     }
@@ -163,13 +163,13 @@ async def _ask_question(message: Message, state: FSMContext):
         f"{title}\n"
         f"Этап: {step + 1} из {total}\n"
         f"{progress_bar} {percent}%\n\n"
-        f"❓ <b>{q['text']}</b>"
+        f" <b>{q['text']}</b>"
     )
     
     kb = None
     if q['type'] == 'button' and q.get('options'):
         kb = get_options_keyboard(q['options'])
-        
+
     elif q['type'] == 'photo':
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➡️ Пропустить (без фото)", callback_data="skip_photo")],
