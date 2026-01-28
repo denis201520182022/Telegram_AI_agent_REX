@@ -9,43 +9,50 @@ from src.utils.metrics import SYSTEM_ERRORS
 
 async def send_to_queue(queue_name: str, data: dict):
     """
-    Отправляет JSON задачу в RabbitMQ.
-    Включает мониторинг ошибок и логирование.
+    Отправляет задачу в формате JSON в указанную очередь RabbitMQ.
+    
+    Используется для:
+    - q_notifications: отправка сообщений пользователям через sender_worker.
+    - q_ai_generation: отправка запросов на генерацию текста через ai_worker.
+    
+    Обеспечивает PERSISTENT (стойкую) доставку сообщений.
     """
-    # Создаем контекстный логгер
+    # Контекстное логирование для отслеживания пути задачи
     log = logger.bind(service="rabbitmq", queue=queue_name)
     
     try:
+        # connect_robust автоматически переподключается при разрыве соединения
         connection = await aio_pika.connect_robust(settings.RABBIT_URL)
         
         async with connection:
             channel = await connection.channel()
             
-            # Объявляем очередь (durable=True)
-            queue = await channel.declare_queue(queue_name, durable=True)
+            # Объявляем очередь. durable=True значит, что очередь переживет рестарт RabbitMQ
+            await channel.declare_queue(queue_name, durable=True)
             
-            message_body = json.dumps(data).encode()
+            # Сериализуем данные в JSON
+            message_body = json.dumps(data, ensure_ascii=False).encode()
             
+            # Публикуем сообщение в стандартный exchange
             await channel.default_exchange.publish(
                 aio_pika.Message(
                     body=message_body, 
+                    # PERSISTENT заставляет RabbitMQ записывать сообщение на диск
                     delivery_mode=aio_pika.DeliveryMode.PERSISTENT
                 ),
                 routing_key=queue_name
             )
             
-            # Логируем успех (на уровне debug, чтобы не спамить в проде, или info если важно)
             log.info("message_published_success", data_keys=list(data.keys()))
 
     except Exception as e:
-        # Логируем ошибку
+        # Критическое логирование и метрики
         log.error("message_publish_failed", error=str(e))
-        
-        # Фиксируем в метриках
         SYSTEM_ERRORS.labels(service="rabbitmq", error_type=type(e).__name__).inc()
         
-        # Отправляем алерт, так как потеря связи с очередью — это критично
-        await send_alert(e, context=f"RabbitMQ ({queue_name})")
+        # Оповещение администратора, так как сбой очереди останавливает работу ИИ и рассылок
+        await send_alert(e, context=f"RabbitMQ Publisher Error ({queue_name})")
         
-        # Пробрасываем ошибку дальше, чтобы вызывающий код знал о провале
+        # Пробрасываем исключение, чтобы вызывающий метод (например, хендлер) 
+        # мог сообщить пользователю о технической ошибке
         raise e

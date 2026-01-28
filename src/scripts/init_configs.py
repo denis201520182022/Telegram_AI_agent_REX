@@ -1,3 +1,5 @@
+#src\scripts\init_configs.py
+
 import asyncio
 import sys
 from os.path import abspath, dirname

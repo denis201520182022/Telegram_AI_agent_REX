@@ -45,13 +45,35 @@ def get_options_keyboard(options: list) -> types.InlineKeyboardMarkup:
 
 # --- 1. СТАРТ АНКЕТЫ ---
 
+# Универсальный старт анкеты
+async def start_generic_survey(message: Message, state: FSMContext, mode: str):
+    await state.clear()
+    
+    # Загружаем вопросы именно для этого режима из Redis
+    # Убедись, что в Google Sheets на листе 1 есть категории 'dating' и 'natal'
+    all_questions = await redis_service.get_survey_config(mode)
+    
+    if not all_questions:
+        await message.answer(f"Ошибка: вопросы для режима {mode} не найдены.")
+        return
+
+    await state.update_data(
+        survey_mode=mode,
+        questions=all_questions,
+        current_step=0,
+        answers={},
+        msg_to_edit=None # Для простоты новых анкет шлем новые сообщения
+    )
+    
+    await state.set_state(SurveyState.in_progress)
+    await _ask_question(message, state)
+
+# Это старый метод для коуча, его оставляем, он вызывает выбор под-режима
 @router.message(F.text == "📝 Начать работу с Коучем") 
-# (Эту кнопку мы добавим в меню позже, или можно вызывать командой)
 async def start_coach_survey(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "👋 Привет! Я твой персональный AI-коуч.\n\n"
-        "С чем будем работать?",
+        "👋 С чем будем работать?",
         reply_markup=get_coach_mode_kb()
     )
     await state.set_state(SurveyState.choosing_mode)
@@ -101,7 +123,6 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # --- 2. ЗАДАЕМ ВОПРОСЫ ---
-
 async def _ask_question(message: Message, state: FSMContext):
     data = await state.get_data()
     questions = data['questions']
@@ -112,16 +133,29 @@ async def _ask_question(message: Message, state: FSMContext):
         return await _finish_questions(message, state)
         
     q = questions[step]
-    text = f"Вопрос {step + 1}/{len(questions)}:\n\n<b>{q['text']}</b>"
+    
+    # --- РАСЧЕТ ПРОГРЕСС-БАРА ---
+    total = len(questions)
+    filled = step
+    percent = int((filled / total) * 100)
+    # Формируем полоску: 🟦🟦⬜️⬜️
+    bar_size = 10
+    filled_size = int((filled / total) * bar_size)
+    progress_bar = "🟦" * filled_size + "⬜️" * (bar_size - filled_size)
+    
+    text = (
+        f"📝 <b>Анкета коуча</b>\n"
+        f"Этап: {step + 1} из {total}\n"
+        f"{progress_bar} {percent}%\n\n"
+        f"❓ <b>{q['text']}</b>"
+    )
     
     kb = None
     if q['type'] == 'button' and q.get('options'):
         kb = get_options_keyboard(q['options'])
     else:
-        # Если ввод текстом, всё равно даем кнопку отмены
         kb = get_cancel_kb()
 
-    # Пытаемся редактировать старое сообщение, чтобы не спамить
     if msg_id:
         try:
             await message.bot.edit_message_text(
@@ -132,9 +166,7 @@ async def _ask_question(message: Message, state: FSMContext):
                 parse_mode="HTML"
             )
             return
-        except TelegramBadRequest:
-            # Если не вышло (например, сообщение слишком старое), шлем новое
-            pass
+        except: pass
             
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await state.update_data(msg_to_edit=sent.message_id)
@@ -224,25 +256,30 @@ async def _finish_questions(message: Message, state: FSMContext):
 async def restart_survey(callback: CallbackQuery, state: FSMContext):
     await callback.answer("🔄 Заполняем заново...")
     await start_coach_survey(callback.message, state)
-
 @router.callback_query(SurveyState.confirmation, F.data == "survey_confirm")
 async def confirm_survey(callback: CallbackQuery, state: FSMContext):
-    # Проверяем, принимал ли политику
+    data = await state.get_data()
+    mode = data.get('survey_mode')
     user_id = callback.from_user.id
+
+    # Если это НЕ коуч (Дейтинг или Натальная карта), завершаем сразу
+    if mode in ['dating', 'natal']:
+        await _finish_non_coach_survey(callback.message, state)
+        await callback.answer("✅ Анкета сохранена!")
+        return
+
+    # Для коуча — стандартная проверка политики и переход к таймзонам
     async with async_session_maker() as session:
         user = await session.get(User, user_id)
         has_accepted = user.has_accepted_policy if user else False
         
     if has_accepted:
-        # Сразу к таймзонам
         await _ask_timezone(callback.message, state)
     else:
-        # Показываем политику
         await callback.message.edit_text(
             "📜 <b>Разрешение на обработку данных</b>\n\n"
-            "Для работы мне нужно обрабатывать ваши ответы (рост, вес, привычки). "
-            "Я использую их только для генерации плана и не передаю третьим лицам.\n\n"
-            "Согласны?",
+            "Для работы мне нужно обрабатывать ваши ответы. Я использую их только "
+            "для генерации плана и не передаю третьим лицам.\n\nСогласны?",
             reply_markup=get_policy_kb(),
             parse_mode="HTML"
         )
@@ -331,14 +368,16 @@ async def finish_setup(callback: CallbackQuery, state: FSMContext):
         survey_id = survey.id
         await session.commit()
     
+    is_adaptation = data.get('is_adaptation', False)
+
     # 2. Отправляем задачу AI Worker-у
-    # В задаче передаем ID анкеты, чтобы воркер сохранил туда план
     task = {
         "user_id": user_id,
-        "mode": "coach", # worker должен знать что это коуч
+        "mode": "coach",
         "sub_mode": mode,
         "answers": answers,
-        "survey_id": survey_id
+        "survey_id": survey_id,
+        "is_adaptation": is_adaptation # Передаем флаг адаптации
     }
     await send_to_queue("q_ai_generation", task)
     
@@ -352,3 +391,30 @@ async def cancel_survey(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("❌ Анкета отменена.")
     await callback.answer()
+
+
+async def _finish_non_coach_survey(message: Message, state: FSMContext):
+    data = await state.get_data()
+    mode = data['survey_mode']
+    answers = data['answers']
+    user_id = message.chat.id
+
+    async with async_session_maker() as session:
+        survey = UserSurvey(
+            user_id=user_id,
+            mode=mode,
+            survey_config_id=1,
+            answers=answers
+        )
+        session.add(survey)
+        await session.flush()
+        survey_id = survey.id
+        await session.commit()
+
+    if mode == 'natal':
+        await message.edit_text("✨ <b>Данные получены!</b>\nЗвезды начинают выстраиваться в ряд... Натальная карта будет готова в течение минуты.", parse_mode="HTML")
+        await send_to_queue("q_ai_generation", {"user_id": user_id, "mode": "natal", "answers": answers, "survey_id": survey_id})
+    else:
+        await message.edit_text("✅ <b>Анкета сохранена!</b>\nТеперь вы будете участвовать в ежедневном поиске партнеров.", parse_mode="HTML")
+
+    await state.clear()

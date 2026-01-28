@@ -1,7 +1,8 @@
 import asyncio
+import json
 import sys
 import datetime
-import pytz # Нужно для работы с зонами
+import pytz
 from os.path import abspath, dirname
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select, func, and_
@@ -9,7 +10,7 @@ from sqlalchemy import select, func, and_
 # --- НАСТРОЙКА ПУТЕЙ ---
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
 
-# --- ИМПОРТЫ ---
+from src.config import settings
 from src.database.models import User, UserSurvey
 from src.database.session import async_session_maker
 from src.services.rabbit import send_to_queue
@@ -18,6 +19,7 @@ from src.services.matching import run_daily_matching
 from src.services.redis import redis_service
 from src.services.llm import generate_response
 from src.utils.text import clean_html_for_telegram
+from src.bot.states import CoachState
 
 # OBSERVABILITY
 from src.utils.logger import logger
@@ -25,28 +27,28 @@ from src.utils.metrics import start_metrics_server
 from src.utils.alerting import send_alert
 
 async def safe_job_run(job_func, job_id, *args, **kwargs):
+    """Обертка для безопасного запуска задач с логированием и алертами."""
     log = logger.bind(job_id=job_id, worker="scheduler")
     try:
         await job_func(*args, **kwargs)
         log.info("job_completed")
     except Exception as e:
         log.error("job_failed", error=str(e))
-        await send_alert(e, context=f"Scheduler: {job_id}")
+        await send_alert(e, context=f"Scheduler Job: {job_id}")
 
 # --- ЗАДАЧИ ---
 
 async def check_tracking_times():
     """
-    Запускается каждый час (в 00 минут).
-    Проверяет, у кого из юзеров сейчас "Время трекинга".
+    Проверяет часовые пояса пользователей и инициирует общение с ИИ коучем.
+    Срабатывает раз в час.
     """
     logger.info("tracking_check_started")
-    
-    # 1. Текущее время в UTC
     now_utc = datetime.datetime.now(datetime.timezone.utc)
-    
+    bot_id = settings.BOT_TOKEN.get_secret_value().split(':')[1] # Для ключа FSM
+
     async with async_session_maker() as session:
-        # Берем пользователей, у которых включен трекинг и подписка активна
+        # Ищем пользователей с активным трекингом и подпиской
         stmt = select(User).where(
             and_(
                 User.is_tracking_enabled == True,
@@ -57,52 +59,50 @@ async def check_tracking_times():
         users = (await session.execute(stmt)).scalars().all()
         
         triggered_count = 0
-        
         for user in users:
             try:
-                # 2. Получаем таймзону юзера
                 user_tz = pytz.timezone(user.timezone)
-                
-                # 3. Переводим UTC время в локальное время юзера
                 user_local_time = now_utc.astimezone(user_tz)
                 
-                # 4. Сравниваем ЧАСЫ
-                # Если у юзера 20:15, а tracking_time 20:00 -> совпадение
+                # Проверяем совпадение часа
                 if user_local_time.hour == user.tracking_time.hour:
-                    
-                    # Чтобы не спамить (если вдруг скрипт запустится дважды за час),
-                    # можно использовать Redis ключ с TTL 1 час.
                     lock_key = f"tracking_sent:{user.user_id}:{user_local_time.date()}"
                     if await redis_service.get(lock_key):
                         continue
-                        
-                    # 5. Формируем сообщение от ИИ
-                    # Нам нужно достать имя и контекст, чтобы вопрос был "живым"
-                    # Для скорости просто отправим задачу в очередь AI Worker, 
-                    # пусть он сам сгенерирует вопрос "Как дела?".
-                    
-                    # Но AI Worker ждет входящее сообщение от юзера для чата.
-                    # Поэтому тут мы схитрим: мы отправим задачу с флагом "init_tracking"
-                    
-                    # (Для простоты MVP: генерируем тут промпт и шлем в очередь уведомлений)
-                    
+
+                    # Формируем контекстный запрос к ИИ
+                    # Достаем цель из анкеты, если она есть
+                    survey = await session.scalar(
+                        select(UserSurvey).where(
+                            UserSurvey.user_id == user.user_id, 
+                            UserSurvey.mode == 'coach'
+                        ).order_by(UserSurvey.created_at.desc())
+                    )
+                    goal = survey.answers.get('goal', 'здоровье') if survey else "здоровье"
+
                     system_prompt = (
-                        "Ты заботливый коуч. Твой клиент живет в часовом поясе, где сейчас вечер (или время отчета). "
-                        "Спроси у него коротко (1-2 предложения), как прошел день, что он ел и тренировался ли. "
-                        "Будь дружелюбен."
+                        f"Ты заботливый ИИ-коуч. Твой клиент поставил цель: {goal}. "
+                        f"Сейчас у него {user_local_time.strftime('%H:%M')}. "
+                        "Спроси его коротко и вовлекающе, как прошел его день в контексте цели. "
+                        "Используй эмодзи. Максимум 2 предложения."
                     )
                     
-                    # Генерируем текст вопроса
-                    ai_text_raw = await generate_response(system_prompt, "Сгенерируй вопрос для трекинга.")
+                    ai_text_raw = await generate_response(system_prompt, "Инициируй ежедневный трекинг.")
                     ai_text = clean_html_for_telegram(ai_text_raw)
                     
-                    # Шлем юзеру
+                    # Отправляем сообщение в очередь
                     await send_to_queue("q_notifications", {
                         "user_id": user.user_id,
-                        "text": f"🔔 <b>Трекинг</b>\n\n{ai_text}"
+                        "text": f"🔔 <b>Контроль прогресса</b>\n\n{ai_text}"
                     })
+
+                    # ВАЖНО: Принудительно ставим пользователю состояние "chatting" в Redis,
+                    # чтобы его ответ сразу попал в AI Worker (режим коуча включен).
+                    # Формат ключа aiogram 3: fsm:<bot_id>:<chat_id>:<user_id>:state
+                    state_key = f"fsm:{bot_id}:{user.user_id}:{user.user_id}:state"
+                    await redis_service.client.set(state_key, CoachState.chatting.state)
                     
-                    # Ставим лок на 20 часов
+                    # Лочим отправку на этот день (на 20 часов)
                     await redis_service.set(lock_key, "1", ex=72000)
                     triggered_count += 1
                     
@@ -112,27 +112,48 @@ async def check_tracking_times():
 
     logger.info("tracking_check_completed", sent_count=triggered_count)
 
-# --- ЗАПУСК ---
+async def update_daily_horoscopes():
+    """Генерирует базу гороскопов на день."""
+    logger.info("horoscope_update_started")
+    from src.services.horoscope import RUS_SIGNS
+
+    for sign_en, sign_ru in RUS_SIGNS.items():
+        try:
+            prompt = (
+                f"Напиши 3 варианта гороскопа на сегодня для знака {sign_ru}. "
+                "1 вариант: Вдохновляющий. 2 вариант: Прагматичный. 3 вариант: Осторожный. "
+                "Раздели варианты строго символом | без лишнего текста."
+            )
+            res = await generate_response("Ты профессиональный астролог", prompt)
+            # Сохраняем в Redis на 25 часов
+            await redis_service.set(f"horoscope_daily:{sign_en}", res, ex=90000)
+        except Exception as e:
+            logger.error("horoscope_gen_failed", sign=sign_en, error=str(e))
+
+    logger.info("horoscope_update_completed")
+
+# --- ГЛАВНЫЙ ЦИКЛ ---
+
 async def main():
     logger.info("service_started", service="scheduler")
-    scheduler = AsyncIOScheduler(timezone="UTC") # Сам шедулер работает в UTC
+    scheduler = AsyncIOScheduler(timezone="UTC")
     
-    # 1. Обновление вопросов (раз в 30 мин)
+    # Задачи планировщика
     scheduler.add_job(safe_job_run, 'interval', minutes=30, args=[update_surveys, 'update_surveys'])
-    
-    # 2. Дейтинг (раз в день в 12:00 UTC) - можно оставить фиксированно
     scheduler.add_job(safe_job_run, 'cron', hour=12, minute=0, args=[run_daily_matching, 'dating'])
-    
-    # 3. ТРЕКИНГ ПОЯСОВ (Каждый час ровно в 00 минут)
+    scheduler.add_job(safe_job_run, 'cron', hour=8, minute=0, args=[update_daily_horoscopes, 'horoscopes'])
     scheduler.add_job(safe_job_run, 'cron', minute=0, args=[check_tracking_times, 'tracking_hourly'])
 
     scheduler.start()
     
-    # Первичная загрузка вопросов
+    # Первичная инициализация при старте воркера
     try:
         await update_surveys()
-    except: 
-        pass
+        # Если в редисе нет гороскопов, генерим сразу
+        if not await redis_service.get("horoscope_daily:aries"):
+            await update_daily_horoscopes()
+    except Exception as e:
+        logger.error("scheduler_init_error", error=str(e))
 
     while True:
         await asyncio.sleep(3600)
@@ -141,4 +162,8 @@ if __name__ == "__main__":
     start_metrics_server(8003)
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(main())
+    
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("service_stopped")

@@ -1,3 +1,7 @@
+#src\scripts\gen_qr.py
+
+
+
 import asyncio
 import csv
 import secrets

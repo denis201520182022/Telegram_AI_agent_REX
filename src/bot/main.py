@@ -3,7 +3,7 @@ import sys
 import datetime
 from os.path import abspath, dirname
 
-# Пути для импортов
+# --- НАСТРОЙКА ПУТЕЙ ---
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
 
 from aiogram import Bot, Dispatcher
@@ -29,22 +29,25 @@ from src.bot.handlers import admin as admin_router
 from src.bot.handlers import dating as dating_router
 from src.bot.handlers import profile as profile_router 
 from src.bot.handlers import survey as survey_router
-# НОВЫЕ РОУТЕРЫ:
-from src.bot.handlers import menu as menu_router  # Логика кнопок меню
-from src.bot.handlers import coach as coach_router # Чат с коучем
+from src.bot.handlers import menu as menu_router 
+from src.bot.handlers import coach as coach_router
 
 from src.bot.middlewares.check_sub import CheckSubscriptionMiddleware
 from src.bot.keyboards.menu import get_main_menu
 
-# Хелпер для проверки админа
 def is_admin(user_id: int) -> bool:
+    """Проверяет, является ли пользователь администратором."""
     try:
-        admin_ids = [int(x) for x in settings.ADMIN_IDS.split(',')]
+        admin_ids = [int(x.strip()) for x in settings.ADMIN_IDS.split(',')]
         return user_id in admin_ids
-    except:
+    except Exception:
         return False
 
 async def start_handler(message: Message, command: CommandObject):
+    """
+    Обработчик /start. 
+    Поддерживает deep-linking для активации QR-кодов: /start <qr_hash>
+    """
     args = command.args 
     user_id = message.from_user.id
     
@@ -52,7 +55,7 @@ async def start_handler(message: Message, command: CommandObject):
     USER_UPDATES.labels(type="command_start").inc()
     
     async with async_session_maker() as session:
-        # 1. Проверяем или создаем юзера
+        # 1. Получаем или создаем пользователя
         stmt = select(User).where(User.user_id == user_id)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
@@ -67,102 +70,89 @@ async def start_handler(message: Message, command: CommandObject):
             await session.commit()
             log.info("new_user_registered")
 
-        # --- ЛОГИКА ДЛЯ АДМИНА (Full Access) ---
-        if is_admin(user_id):
-            menu_kb = get_main_menu(natal_credits=999, is_admin=True)
-            await message.answer(
-                "👋 Привет, Админ! У вас полный доступ без ограничений.", 
-                reply_markup=menu_kb
-            )
-            return
-        # ---------------------------------------
-
-        # Получаем меню для обычного юзера
-        menu_kb = get_main_menu(
-            natal_credits=user.natal_chart_credits,
-            is_admin=False
-        )
-
-        # 2. Активация QR кода
+        # --- 2. ЛОГИКА АКТИВАЦИИ QR-КОДА ---
         if args:
             qr_hash = args
             q_stmt = select(QRCode).where(QRCode.code_hash == qr_hash)
             q_res = await session.execute(q_stmt)
             qr = q_res.scalar_one_or_none()
 
-            # --- БЛОК ПРОВЕРОК ---
             if not qr:
                 log.warning("invalid_qr_attempt", code_hash=qr_hash)
-                await message.answer("❌ Неверный QR-код.")
+                await message.answer("❌ <b>Неверный QR-код.</b>\nПожалуйста, убедитесь, что ссылка корректна.")
                 return
 
             if not qr.is_active:
-                log.warning("inactive_qr_attempt", code_hash=qr_hash)
-                await message.answer("❌ Этот код деактивирован администратором.")
+                await message.answer("❌ Этот код деактивирован.")
                 return
 
             if qr.activated_at:
                 if qr.activated_by_id == user_id:
                     await message.answer("ℹ️ Вы уже активировали этот код ранее.")
                 else:
-                    log.warning("duplicate_qr_usage_attempt", code_hash=qr_hash)
                     await message.answer("❌ Этот код уже использован другим пользователем.")
                 
-                await message.answer("🏠 Главное меню:", reply_markup=menu_kb)
+                # Показываем меню, если есть доступ
+                now = datetime.datetime.now(datetime.timezone.utc)
+                if is_admin(user_id) or (user.subscription_expires_at and user.subscription_expires_at > now):
+                    kb = get_main_menu(natal_credits=user.natal_chart_credits, is_admin=is_admin(user_id))
+                    await message.answer("🏠 Главное меню:", reply_markup=kb)
                 return
             
-            # --- АКТИВАЦИЯ ---
+            # Активация
             now = datetime.datetime.now(datetime.timezone.utc)
             qr.activated_at = now
             qr.activated_by_id = user_id
             user.qr_activations_count += 1
             
-            # Логика начисления КРЕДИТОВ (каждый 3-й код)
+            # Начисление бонусов (Натальная карта за каждые 5 кодов)
             bonus_msg = ""
-            if user.qr_activations_count == 5:
+            if user.qr_activations_count % 5 == 0:
                 user.natal_chart_credits += 1
-                bonus_msg = "\n\n🌟 <b>Поздравляем!</b> Вы активировали 5 кодов! Вам доступна <b>Натальная карта</b> (1 раз)."
-            elif user.qr_activations_count < 5:
-                left = 5 - user.qr_activations_count
-                bonus_msg = f"\n\n(Активируйте еще {left} шт., чтобы открыть Натальную карту)"
-            
-            # Обновляем подписку (+5 дней)
-            if user.subscription_expires_at and user.subscription_expires_at > now:
-                user.subscription_expires_at += datetime.timedelta(days=5)
+                bonus_msg = "\n\n🌟 <b>Бонус!</b> Вы активировали 5-й код. Вам доступна 1 генерация Натальной карты!"
             else:
-                user.subscription_expires_at = now + datetime.timedelta(days=5)
+                left = 5 - (user.qr_activations_count % 5)
+                bonus_msg = f"\n\n<i>(Еще {left} активации до получения Натальной карты)</i>"
+            
+            # Продление подписки (+5 дней за код)
+            days_to_add = datetime.timedelta(days=5)
+            if user.subscription_expires_at and user.subscription_expires_at > now:
+                user.subscription_expires_at += days_to_add
+            else:
+                user.subscription_expires_at = now + days_to_add
             
             await session.commit()
-            
-            log.info("qr_activated_successfully", code_hash=qr_hash, activation_count=user.qr_activations_count)
+            log.info("qr_activated_successfully", code_hash=qr_hash)
             
             expires_str = user.subscription_expires_at.strftime("%d.%m.%Y")
-            
-            # Обновляем меню с учетом НОВЫХ кредитов
-            new_menu_kb = get_main_menu(
-                natal_credits=user.natal_chart_credits,
-                is_admin=False
-            )
+            kb = get_main_menu(natal_credits=user.natal_chart_credits, is_admin=is_admin(user_id))
             
             await message.answer(
-                f"✅ <b>Доступ активирован!</b>\nДействует до: {expires_str}" + bonus_msg,
-                reply_markup=new_menu_kb
+                f"✅ <b>Доступ активирован!</b>\nПодписка продлена до: <b>{expires_str}</b>" + bonus_msg,
+                reply_markup=kb
             )
             return
 
-        # 3. Просто /start без кода
+        # --- 3. ОБЫЧНЫЙ ВХОД (БЕЗ QR) ---
         now = datetime.datetime.now(datetime.timezone.utc)
+        admin_status = is_admin(user_id)
         
-        # Проверка подписки для обычных юзеров
-        if user.subscription_expires_at and user.subscription_expires_at > now:
-             await message.answer("🏠 Главное меню:", reply_markup=menu_kb)
+        if admin_status or (user.subscription_expires_at and user.subscription_expires_at > now):
+             kb = get_main_menu(natal_credits=user.natal_chart_credits, is_admin=admin_status)
+             await message.answer("🏠 Главное меню:", reply_markup=kb)
         else:
-             await message.answer("👋 Привет! Я REX Bot.\nДля доступа к коучу и тренировкам отсканируйте QR-код с упаковки.")
+             await message.answer(
+                 "👋 Привет! Я <b>REX Bot</b>.\n\n"
+                 "Я помогу тебе с питанием, тренировками и даже подберу партнера для спорта.\n\n"
+                 "⚠️ <b>Доступ ограничен.</b>\n"
+                 "Чтобы начать пользоваться функциями коуча, отсканируй QR-код с упаковки REX."
+             )
 
-# --- ЗАПУСК ---
 async def main():
+    """Инициализация и запуск бота."""
     logger.info("service_started", service="bot_polling")
     
+    # Хранилище FSM в Redis
     storage = RedisStorage(redis=redis_client)
     
     bot = Bot(
@@ -171,27 +161,19 @@ async def main():
     )
     dp = Dispatcher(storage=storage)
 
-    # --- ПОДКЛЮЧЕНИЕ MIDDLEWARE ---
+    # Middlewares
     dp.message.middleware(CheckSubscriptionMiddleware())
     dp.callback_query.middleware(CheckSubscriptionMiddleware())
 
-    # --- РЕГИСТРАЦИЯ РОУТЕРОВ ---
-    # Порядок важен!
+    # Регистрация роутеров (ПОРЯДОК ВАЖЕН)
+    dp.include_router(admin_router.router)  # Админка первая
+    dp.include_router(menu_router.router)   # Главное меню
+    dp.include_router(coach_router.router)  # Логика чата коуча
+    dp.include_router(survey_router.router) # Опросы
+    dp.include_router(dating_router.router) # Дейтинг (лайки/дизлайки)
+    dp.include_router(profile_router.router)# Настройки профиля
     
-    dp.include_router(admin_router.router)
-    
-    # 1. Сначала обрабатываем клики по меню ("AI Коуч")
-    dp.include_router(menu_router.router)
-    
-    # 2. Потом специфичные режимы (Чат с коучем, Анкета)
-    dp.include_router(coach_router.router)  # Ловит текст, если state=chatting
-    dp.include_router(survey_router.router) # Ловит текст, если state=survey
-    
-    # 3. Остальное
-    dp.include_router(dating_router.router)
-    dp.include_router(profile_router.router) # Оставляем для редактирования дейтинг-профиля
-    
-    # Регистрация команды /start
+    # Регистрация стартовой команды
     dp.message.register(start_handler, CommandStart())
     
     logger.info("bot_polling_started")
@@ -199,18 +181,17 @@ async def main():
         await dp.start_polling(bot)
     except Exception as e:
         logger.critical("bot_crashed", error=str(e))
-        await send_alert(e, context="Bot Polling Service")
+        await send_alert(e, context="Bot Polling Critical Failure")
         raise e
 
 if __name__ == "__main__":
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
+    # Метрики на порту 8002
     start_metrics_server(8002)
     
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("service_stopped")
-    except Exception as e:
-        pass

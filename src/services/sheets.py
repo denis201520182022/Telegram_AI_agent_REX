@@ -10,6 +10,9 @@ from src.utils.alerting import send_alert
 from src.utils.metrics import SYSTEM_ERRORS
 
 def get_creds():
+    """
+    Авторизация в Google API через сервисный аккаунт.
+    """
     creds = Credentials.from_service_account_file(settings.GOOGLE_CREDENTIALS_FILE)
     scoped = creds.with_scopes([
         "https://spreadsheets.google.com/feeds",
@@ -18,12 +21,18 @@ def get_creds():
     ])
     return scoped
 
+# Менеджер для асинхронной работы с Google Таблицами
 agcm = AsyncioGspreadClientManager(get_creds)
 
 async def fetch_all_data():
     """
-    Скачивает вопросы (Лист 1) и промпты (Лист 2).
-    Новая структура: category | key | type | text | options
+    Синхронизация данных из Google Таблиц.
+    Лист 1: Вопросы анкет (Коуч, Дейтинг, Натальная карта).
+    Лист 2 (Prompts): Системные инструкции для ИИ.
+    
+    Структура колонок Листа 1:
+    category | key | type | text | options
+    (Например: common | name | text | Как тебя зовут? | )
     """
     log = logger.bind(service="google_sheets")
     start_time = time.time()
@@ -32,29 +41,28 @@ async def fetch_all_data():
         agc = await agcm.authorize()
         sh = await agc.open_by_key(settings.GOOGLE_SHEET_ID)
         
-        # --- 1. Читаем ВОПРОСЫ (Лист 1) ---
+        # --- 1. ПАРСИНГ ВОПРОСОВ (Лист 1) ---
         ws_questions = await sh.get_worksheet(0)
         rows_q = await ws_questions.get_all_values()
         
-        # Список всех вопросов (фильтровать будем в survey.py)
         questions = []
         
         if rows_q:
-            # Пропускаем заголовок (rows_q[1:])
+            # Пропускаем заголовок (первая строка)
             for r in rows_q[1:]:
-                # Проверка на пустую строку (нужно хотя бы 4 колонки: cat, key, type, text)
-                if len(r) < 4 or not r[0]: 
+                # Валидация: категория, ключ, тип и текст вопроса обязательны
+                if len(r) < 4 or not r[0] or not r[1]: 
                     continue
                 
-                category = r[0].strip().lower() # common, nutrition, workout
+                category = r[0].strip().lower() # common, nutrition, workout, dating, natal
                 key = r[1].strip()
-                q_type = r[2].strip()
+                q_type = r[2].strip().lower()   # text, int, button
                 text = r[3].strip()
                 
-                # Опции (если есть)
+                # Опции для кнопок (разделяются запятой)
                 options = []
                 if len(r) > 4 and r[4]:
-                    options = [x.strip() for x in r[4].split(',')]
+                    options = [x.strip() for x in r[4].split(',') if x.strip()]
                 
                 questions.append({
                     "category": category,
@@ -64,14 +72,14 @@ async def fetch_all_data():
                     "options": options
                 })
 
-        # --- 2. Читаем ПРОМПТЫ (Лист 2) ---
-        # Ищем лист с именем "Prompts" или берем второй по счету
+        # --- 2. ПАРСИНГ ПРОМПТОВ (Лист 2 / "Prompts") ---
         try:
             ws_prompts = await sh.worksheet("Prompts")
-        except:
+        except Exception:
+            # Если лист "Prompts" не найден по имени, берем второй по индексу
             try:
                 ws_prompts = await sh.get_worksheet(1)
-            except:
+            except Exception:
                 ws_prompts = None
 
         prompts = {}
@@ -79,27 +87,26 @@ async def fetch_all_data():
             rows_p = await ws_prompts.get_all_values()
             if rows_p:
                 for r in rows_p[1:]: 
-                    if len(r) < 2 or not r[0]: continue
-                    mode = r[0].strip() # например 'coach', 'dating'
+                    # Ожидаем: mode | prompt_text
+                    if len(r) < 2 or not r[0] or not r[1]: 
+                        continue
+                    mode = r[0].strip().lower() 
                     text = r[1].strip()
                     prompts[mode] = text
 
         duration = time.time() - start_time
         log.info(
             "sheets_fetch_success", 
-            duration=duration, 
+            duration=round(duration, 2), 
             total_questions=len(questions),
             prompts_found=list(prompts.keys())
         )
         
-        # Возвращаем:
-        # 1. Список вопросов (плоский список словарей)
-        # 2. Словарь промптов
         return questions, prompts
 
     except Exception as e:
         log.error("sheets_fetch_failed", error=str(e))
         SYSTEM_ERRORS.labels(service="google_sheets", error_type=type(e).__name__).inc()
-        await send_alert(e, context="Google Sheets Sync")
-        # Если упало — пробрасываем ошибку, чтобы worker знал об этом
+        await send_alert(e, context="Google Sheets Sync Critical Failure")
+        # Пробрасываем ошибку выше, чтобы воркер scheduler.py мог её залогировать
         raise e
