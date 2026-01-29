@@ -6,7 +6,7 @@ from sqlalchemy import select, desc, update
 from src.utils.admin import is_admin
 from src.bot.states import CoachState, SurveyState
 from src.database.session import async_session_maker
-from src.database.models import ChatMessage, UserSurvey, User
+from src.database.models import UserSurvey, User
 from src.services.rabbit import send_to_queue
 
 # Клавиатуры
