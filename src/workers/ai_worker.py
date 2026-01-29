@@ -21,6 +21,7 @@ from src.utils.logger import logger
 from src.utils.metrics import start_metrics_server, AI_TASK_PROCESSED, AI_TASK_DURATION
 from src.utils.alerting import send_alert
 from src.utils.text import clean_html_for_telegram
+# src/workers/ai_worker.py
 
 async def process_task(message: aio_pika.IncomingMessage):
     """
@@ -33,7 +34,6 @@ async def process_task(message: aio_pika.IncomingMessage):
         try:
             task = json.loads(message.body)
         except json.JSONDecodeError:
-            # Логируем ошибку, если не смогли распарсить JSON
             logger.error("json_decode_error", message_body=message.body)
             return
 
@@ -50,7 +50,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                     prompt_template = await redis_service.get_prompt(prompt_key)
                     if not prompt_template:
                         log.warning("prompt_not_found_in_redis", prompt_key=prompt_key)
-                        return "Ты эмпатичный коуч."  # Fallback
+                        return "Ты эмпатичный коуч."
                     return prompt_template
 
                 # --- СЦЕНАРИЙ 1: КОУЧ (Первая генерация или Адаптация плана) ---
@@ -63,18 +63,15 @@ async def process_task(message: aio_pika.IncomingMessage):
                     user = await session.get(User, user_id)
                     if not user:
                         log.error("user_not_found", user_id=user_id)
-                        return # Важно: прерываем обработку, если юзер не найден
+                        return
 
                     old_plan_context = ""
-                    # Если это адаптация, берем старый план и историю для контекста
                     if is_adaptation and user and user.coach_history:
-                        # Ищем самый последний план в истории
                         for msg in reversed(user.coach_history):
                             if msg.get('role') == 'assistant' and "<b>" in msg.get('content', ''):
                                 old_plan_context = f"\n\nТЕКУЩИЙ ПЛАН КЛИЕНТА (нужно адаптировать):\n{msg['content']}"
                                 break
 
-                    # Формируем системный промпт
                     system_prompt_template = await _get_prompt("coach")
                     system_text = (
                         f"{system_prompt_template}\n"
@@ -88,19 +85,22 @@ async def process_task(message: aio_pika.IncomingMessage):
                         "Это твое первое сообщение пользователю в этом режиме."
                     )
 
-                    ai_raw = await generate_response(system_text, [{"role": "user", "content": user_instruction}]) # <---  ИЗМЕНЕНИЕ ЗДЕСЬ
+                    # !!! ИСПРАВЛЕНИЕ: Передаем список словарей, а не строку !!!
+                    ai_raw = await generate_response(system_text, [{"role": "user", "content": user_instruction}])
                     clean_text = clean_html_for_telegram(ai_raw)
+                    
+                    log.info("ai_response_text", raw_text=ai_raw, clean_text=clean_text)
 
                     # Обновляем анкету
                     await session.execute(
                         update(UserSurvey).where(UserSurvey.id == survey_id).values(
-                            ai_recommendation=clean_text,  # Это поле теперь как "первоначальный план"
-                            current_plan=clean_text  # А это будет "живым", обновляемым планом
+                            ai_recommendation=clean_text,
+                            current_plan=clean_text
                         )
                     )
 
-                    # --- ВАЖНО: Инициализируем историю чата ---
-                    new_history = user.coach_history or []  # Используем [] даже для сброса
+                    # Инициализируем историю
+                    new_history = user.coach_history or []
                     new_history.append({"role": "assistant", "content": clean_text})
                     user.coach_history = new_history
 
@@ -118,17 +118,14 @@ async def process_task(message: aio_pika.IncomingMessage):
                         log.error("user_not_found", user_id=user_id)
                         return
 
-                    # Достаем последнюю активную анкету и план
                     survey = await session.scalar(
                         select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach').order_by(desc(UserSurvey.created_at))
                     )
                     current_plan = survey.current_plan if survey else "План еще не создан."
                     answers = survey.answers if survey else {}
 
-                    # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: СОБИРАЕМ КОНТЕКСТ ---
                     history_for_api = user.coach_history or []
 
-                    # Собираем промпт
                     system_prompt_template = await _get_prompt("coach")
                     system_prompt = (
                         f"{system_prompt_template}\n"
@@ -141,59 +138,56 @@ async def process_task(message: aio_pika.IncomingMessage):
                         "4. Используй HTML."
                     )
 
-                    # Ограничиваем размер истории, чтобы не перегружать API
-                    if len(history_for_api) > 15:  # Пример: храним последние 15 сообщений
+                    if len(history_for_api) > 15:
                         history_for_api = history_for_api[-15:]
                     
                     ai_raw = await generate_response(system_prompt, history_for_api)
+                    
+                    # Логируем ответ для отладки
+                    log.info("ai_response_text", raw_text=ai_raw)
 
-                    # Проверка: просил ли ИИ обновить план целиком?
                     should_update_full_plan = "[UPDATE_PLAN]" in ai_raw
                     final_reply = ai_raw.replace("[UPDATE_PLAN]", "").strip()
                     clean_text = clean_html_for_telegram(final_reply)
-                    log.info("ai_response_text", raw_text=ai_raw, clean_text=clean_text)
 
-                    # Сохраняем ответ ИИ в историю
                     new_history = user.coach_history or []
                     new_history.append({'role': 'assistant', 'content': clean_text})
 
-                    # Если нужно обновить весь план (красивая перегенерация)
                     if should_update_full_plan and survey:
-                        # Добавляем в историю "виртуальное" сообщение от юзера, чтобы ИИ понял задачу
-                        history_for_api.append({'role': 'user', 'content': '[SYSTEM COMMAND] Отлично, на основе нашего диалога, пожалуйста, составь полную обновленную версию моего плана. Выдай только сам план в HTML без лишних комментариев.'})
+                        # !!! ИСПРАВЛЕНИЕ: Передаем системную команду как сообщение юзера
+                        cmd_msg = {'role': 'user', 'content': '[SYSTEM COMMAND] Отлично, на основе нашего диалога составь полную обновленную версию плана. Только план HTML.'}
+                        history_for_update = history_for_api + [cmd_msg]
                         
-                        new_plan_raw = await generate_response(system_prompt, history_for_api)
+                        new_plan_raw = await generate_response(system_prompt, history_for_update)
                         new_plan_clean = clean_html_for_telegram(new_plan_raw)
                         
-                        survey.current_plan = new_plan_clean  # Обновляем "живой" план
-                        
-                        # Также добавляем новый план в историю как сообщение от ассистента
+                        survey.current_plan = new_plan_clean
                         new_history.append({'role': 'assistant', 'content': new_plan_clean})
                         
-                        # Отправляем отдельным сообщением
                         await send_to_queue("q_notifications", {
                             "user_id": user_id,
                             "text": f"🔄 <b>Договорились! Вот ваш обновленный план:</b>\n\n{new_plan_clean}"
                         })
 
-                    # Сохраняем все изменения в БД
                     user.coach_history = new_history
                     await session.commit()
+                    
+                    # Не отправляем пустое сообщение
+                    if clean_text:
+                        await send_to_queue("q_notifications", {"user_id": user_id, "text": clean_text})
+                    else:
+                        log.warning("empty_ai_response_skipped")
 
-                    # Отправляем основной ответ пользователю
-                    await send_to_queue("q_notifications", {"user_id": user_id, "text": clean_text})
-
-                # --- СЦЕНАРИЙ 3: НАТАЛЬНАЯ КАРТА ---
                 # --- СЦЕНАРИЙ 3: НАТАЛЬНАЯ КАРТА ---
                 elif mode == 'natal':
                     answers = task.get('answers')
                     survey_id = task.get('survey_id')
 
-                    # Берем промпт из Google Sheets
                     prompt_template = await _get_prompt("natal")
                     prompt = prompt_template.format(json.dumps(answers, ensure_ascii=False))
 
-                    ai_raw = await generate_response("Ты астролог", prompt)
+                    # !!! ИСПРАВЛЕНИЕ: Передаем список, а не строку !!!
+                    ai_raw = await generate_response("Ты астролог", [{"role": "user", "content": prompt}])
                     clean_text = clean_html_for_telegram(ai_raw)
 
                     await session.execute(
@@ -206,14 +200,11 @@ async def process_task(message: aio_pika.IncomingMessage):
                         "text": f"🌟 <b>Ваша Натальная карта готова:</b>\n\n{clean_text}"
                     })
 
-                # --- СЦЕНАРИЙ 4: ТРЕКИНГ (Инициированное ИИ общение) ---
+                # --- СЦЕНАРИЙ 4: ТРЕКИНГ ---
                 elif mode == 'tracking_trigger':
                     user = await session.get(User, user_id)
-                    if not user:
-                        log.error("user_not_found", user_id=user_id)
-                        return
+                    if not user: return
 
-                    # Собираем контекст
                     survey = await session.scalar(
                         select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach').order_by(desc(UserSurvey.created_at))
                     )
@@ -221,32 +212,30 @@ async def process_task(message: aio_pika.IncomingMessage):
                     answers = survey.answers if survey else {}
                     history_for_api = user.coach_history or []
 
-                    # Получаем промпт из гугл таблиц (это важно!)
                     system_prompt_template = await _get_prompt("coach")
                     system_prompt = (
                         f"{system_prompt_template}\n"
                         f"Данные клиента: {json.dumps(answers, ensure_ascii=False)}.\n"
                         f"Текущий план: {current_plan}"
                     )
-                    # Создаем сообщение для трекинга
                     history_for_api.append({
                         "role": "user",
                         "content": "[SYSTEM COMMAND] Коротко и заботливо спроси меня, как прошел мой день в контексте нашей цели. Используй эмодзи."
                     })
-                    # Генерируем ответ
+                    
                     ai_raw = await generate_response(system_prompt, history_for_api)
                     clean_text = clean_html_for_telegram(ai_raw)
-                    # Сохраняем сообщение ИИ в историю
+                    
                     new_history = user.coach_history or []
                     new_history.append({'role': 'assistant', 'content': clean_text})
                     user.coach_history = new_history
                     await session.commit()
 
-                    # Отправляем пользователю
-                    await send_to_queue("q_notifications", {
-                        "user_id": user_id,
-                        "text": f"🔔 <b>Контроль прогресса</b>\n\n{clean_text}"
-                    })
+                    if clean_text:
+                        await send_to_queue("q_notifications", {
+                            "user_id": user_id,
+                            "text": f"🔔 <b>Контроль прогресса</b>\n\n{clean_text}"
+                        })
 
             AI_TASK_PROCESSED.labels(mode=mode, status="success").inc()
             log.info("task_completed", duration=time.time() - start_time)
