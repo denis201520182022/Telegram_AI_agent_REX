@@ -23,6 +23,25 @@ from src.utils.alerting import send_alert
 from src.utils.text import clean_html_for_telegram
 # src/workers/ai_worker.py
 
+
+
+COACH_ROLES = {
+    "nutrition": (
+        "Твоя узкая специализация: ДИЕТОЛОГ-НУТРИЦИОЛОГ. "
+        "Ты отвечаешь ТОЛЬКО за питание, расчет калорий, БЖУ и рацион. "
+        "Если тебя спросят про тренировки — вежливо напомни, что ты эксперт по питанию."
+    ),
+    "workout": (
+        "Твоя узкая специализация: ФИТНЕС-ТРЕНЕР. "
+        "Ты отвечаешь ТОЛЬКО за программу тренировок, технику упражнений и активность. "
+        "Если тебя спросят про диету — вежливо напомни, что ты эксперт по спорту."
+    ),
+    "combined": (
+        "Твоя специализация: УНИВЕРСАЛЬНЫЙ КОУЧ (Питание + Спорт). "
+        "Ты помогаешь клиенту сбалансировать и рацион, и тренировочный процесс одновременно."
+    )
+}
+
 async def process_task(message: aio_pika.IncomingMessage):
     """
     Основной обработчик задач ИИ.
@@ -73,9 +92,12 @@ async def process_task(message: aio_pika.IncomingMessage):
                                 break
 
                     system_prompt_template = await _get_prompt("coach")
+                    role_instruction = COACH_ROLES.get(sub_mode, COACH_ROLES["combined"]) # Определяем роль
+
                     system_text = (
-                        f"{system_prompt_template}\n"
-                        f"РЕЖИМ: {sub_mode}. ДАННЫЕ АНКЕТЫ: {json.dumps(answers, ensure_ascii=False)}."
+                        f"{role_instruction}\n\n" # <--- Вставляем роль в начало
+                        f"ОСНОВНАЯ ИНСТРУКЦИЯ:\n{system_prompt_template}\n\n"
+                        f"ДАННЫЕ АНКЕТЫ: {json.dumps(answers, ensure_ascii=False)}.\n"
                         f"{old_plan_context}"
                     )
 
@@ -128,15 +150,18 @@ async def process_task(message: aio_pika.IncomingMessage):
 
                     history_for_api = user.coach_history or []
 
+                    user = await session.get(User, user_id)
+                    # Достаем режим из профиля юзера (он там сохранился при анкете)
+                    sub_mode = user.coach_mode or "combined" 
+                    role_instruction = COACH_ROLES.get(sub_mode, COACH_ROLES["combined"])
+
                     system_prompt_template = await _get_prompt("coach")
+
                     system_prompt = (
-                        f"{system_prompt_template}\n"
-                        f"Данные клиента: {json.dumps(answers, ensure_ascii=False)}.\n"
-                        f"Текущий актуальный план: {current_plan}\n\n"
-                        "ИНСТРУКЦИЯ:\n"
-                        "1. Отвечай кратко и по делу (1-3 предложения).\n"
-                        "2.\n"
-                        "3. Используй HTML."
+                        f"{role_instruction}\n\n" # <--- Инъекция роли
+                        f"ОСНОВНАЯ ИНСТРУКЦИЯ:\n{system_prompt_template}\n\n"
+                        f"ДАННЫЕ КЛИЕНТА: {json.dumps(answers, ensure_ascii=False)}.\n"
+                        f"ТЕКУЩИЙ ПЛАН: {current_plan}"
                     )
 
                     if len(history_for_api) > 15:
