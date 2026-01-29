@@ -32,7 +32,7 @@ http_client = httpx.AsyncClient(
 
 client = AsyncOpenAI(
     api_key=settings.OPENAI_API_KEY.get_secret_value(),
-    base_url="https://api.groq.com/openai/v1",
+    #base_url="https://api.groq.com/openai/v1",
     http_client=http_client
 )
 
@@ -43,7 +43,8 @@ async def generate_response(system_prompt: str, history: Union[List[Dict[str, st
     Автоматически исправляет формат history, если пришла строка.
     """
     start_time = time.time()
-    MODEL_NAME = "llama-3.3-70b-versatile" 
+    MODEL_NAME = "gpt-4o-mini"
+    #MODEL_NAME = "llama-3.3-70b-versatile" 
     
     log = logger.bind(service="llm_client", provider="groq", model=MODEL_NAME)
 

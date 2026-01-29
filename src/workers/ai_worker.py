@@ -135,7 +135,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                         f"Текущий актуальный план: {current_plan}\n\n"
                         "ИНСТРУКЦИЯ:\n"
                         "1. Отвечай кратко и по делу (1-3 предложения).\n"
-                        "2. Если договорились об изменениях, в конце добавь [UPDATE_PLAN].\n"
+                        "2.\n"
                         "3. Используй HTML."
                     )
 
@@ -187,6 +187,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                     await session.commit()
 
                 # --- СЦЕНАРИЙ 3: НАТАЛЬНАЯ КАРТА ---
+                # --- СЦЕНАРИЙ 3: НАТАЛЬНАЯ КАРТА ---
                 elif mode == 'natal':
                     answers = task.get('answers')
                     survey_id = task.get('survey_id')
@@ -194,18 +195,24 @@ async def process_task(message: aio_pika.IncomingMessage):
                     prompt_template = await _get_prompt("natal")
                     prompt = prompt_template.format(json.dumps(answers, ensure_ascii=False))
 
-                    # !!! ИСПРАВЛЕНИЕ: Передаем список, а не строку !!!
                     ai_raw = await generate_response("Ты астролог", [{"role": "user", "content": prompt}])
                     clean_text = clean_html_for_telegram(ai_raw)
+                    
+                    # --- ДОБАВЛЯЕМ ОБЕРТКУ ТУТ ---
+                    if len(clean_text) > 3800:
+                        clean_text = clean_text[:3800] + "..."
+                    
+                    formatted_natal = f"<blockquote expandable>{clean_text}</blockquote>"
+                    # -----------------------------
 
                     await session.execute(
-                        update(UserSurvey).where(UserSurvey.id == survey_id).values(ai_recommendation=clean_text)
+                        update(UserSurvey).where(UserSurvey.id == survey_id).values(ai_recommendation=formatted_natal)
                     )
                     await session.commit()
 
                     await send_to_queue("q_notifications", {
                         "user_id": user_id,
-                        "text": f"🌟 <b>Ваша Натальная карта готова:</b>\n\n{clean_text}"
+                        "text": f"🌟 <b>Ваша Натальная карта готова:</b>\n\n{formatted_natal}"
                     })
 
                 # --- СЦЕНАРИЙ 4: ТРЕКИНГ ---
