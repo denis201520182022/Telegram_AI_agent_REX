@@ -80,12 +80,10 @@ async def process_task(message: aio_pika.IncomingMessage):
                     )
 
                     user_instruction = (
-                        "[SYSTEM COMMAND] Составь максимально подробный, структурированный и красивый план. "
-                        "Используй HTML: <b>, <i>, <ul>, <li>. Сделай акцент на достижимости целей. "
-                        "Это твое первое сообщение пользователю в этом режиме."
+                        "[SYSTEM COMMAND] Сгенерируй полный план на основе анкеты. "
+                        "Это первая выдача, поэтому сделай её максимально подробной, "
+                        "структурированной и мотивирующей. Используй HTML."
                     )
-
-                    # !!! ИСПРАВЛЕНИЕ: Передаем список словарей, а не строку !!!
                     ai_raw = await generate_response(system_text, [{"role": "user", "content": user_instruction}])
                     clean_text = clean_html_for_telegram(ai_raw)
                     
@@ -153,20 +151,35 @@ async def process_task(message: aio_pika.IncomingMessage):
                     new_history = user.coach_history or []
                     new_history.append({'role': 'assistant', 'content': clean_text})
 
+                    # ... внутри elif mode == 'chat' ...
                     if should_update_full_plan and survey:
-                        # !!! ИСПРАВЛЕНИЕ: Передаем системную команду как сообщение юзера
-                        cmd_msg = {'role': 'user', 'content': '[SYSTEM COMMAND] Отлично, на основе нашего диалога составь полную обновленную версию плана. Только план HTML.'}
-                        history_for_update = history_for_api + [cmd_msg]
+                        log.info("triggering_full_plan_rebuild")
+                        
+                        # Формируем специальную системную команду для "тихого" запроса
+                        # Мы просим только план, без лишних слов "Вот ваш план..."
+                        update_instruction = {
+                            "role": "user", 
+                            "content": "[SYSTEM COMMAND] На основе нашего диалога составь ПОЛНУЮ обновленную версию плана. "
+                                    "Сделай это максимально подробно и красиво. Используй HTML структуру. "
+                                    "Выдай ТОЛЬКО текст плана, без приветствий."
+                        }
+                        
+                        # Отправляем всю историю + эту жесткую команду
+                        history_for_update = history_for_api + [update_instruction]
                         
                         new_plan_raw = await generate_response(system_prompt, history_for_update)
                         new_plan_clean = clean_html_for_telegram(new_plan_raw)
                         
+                        # Сохраняем в "актуальное" поле анкеты
                         survey.current_plan = new_plan_clean
-                        new_history.append({'role': 'assistant', 'content': new_plan_clean})
                         
+                        # Добавляем в историю как важное событие
+                        new_history.append({'role': 'assistant', 'content': f"🔄 ПЛАН ОБНОВЛЕН:\n{new_plan_clean}"})
+                        
+                        # Отправляем пользователю отдельным красивым сообщением
                         await send_to_queue("q_notifications", {
                             "user_id": user_id,
-                            "text": f"🔄 <b>Договорились! Вот ваш обновленный план:</b>\n\n{new_plan_clean}"
+                            "text": f"🪄 <b>Я внес изменения в твой план:</b>\n\n{new_plan_clean}"
                         })
 
                     user.coach_history = new_history
