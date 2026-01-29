@@ -1,7 +1,9 @@
+# src/services/llm.py
+
 import httpx
 import time
 import json
-from typing import List, Dict
+from typing import List, Dict, Union, Any # Добавил Union и Any
 from openai import AsyncOpenAI
 from prometheus_client import Histogram
 from src.config import settings
@@ -34,23 +36,46 @@ client = AsyncOpenAI(
     http_client=http_client
 )
 
-async def generate_response(system_prompt: str, history: List[Dict[str, str]]) -> str:
+# Обновил аннотацию типов, чтобы Python знал, что может прийти что угодно
+async def generate_response(system_prompt: str, history: Union[List[Dict[str, str]], str, Any]) -> str:
     """
     Генерация ответа через Groq (Llama-3.3).
-    Принимает системный промпт и историю сообщений (список словарей).
+    Автоматически исправляет формат history, если пришла строка.
     """
     start_time = time.time()
     MODEL_NAME = "llama-3.3-70b-versatile" 
     
-    # Логгер с контекстом
     log = logger.bind(service="llm_client", provider="groq", model=MODEL_NAME)
 
+    # --- БЛОК ЗАЩИТЫ (FIX TYPE ERROR) ---
+    # Проверяем, что нам пришло в history, и приводим к списку
+    if isinstance(history, str):
+        try:
+            # Если это JSON-строка (например '[{"role":...}]'), парсим её
+            parsed_history = json.loads(history)
+            if isinstance(parsed_history, list):
+                history = parsed_history
+            else:
+                # Если распарсилось не в список, а в dict или что-то еще
+                history = [{"role": "user", "content": str(history)}]
+        except json.JSONDecodeError:
+            # Если это просто текст, оборачиваем его в структуру сообщения
+            history = [{"role": "user", "content": history}]
+            
+    elif history is None:
+        history = []
+        
+    elif not isinstance(history, list):
+        # Если пришел какой-то мусор (не список и не строка)
+        history = []
+    # ------------------------------------
+
     try:
-        # Собираем итоговый список сообщений
+        # Теперь history гарантированно список, и сложение не упадет
         messages_to_send = [{"role": "system", "content": system_prompt}] + history
         
-        # ЛОГИРУЕМ ТО, ЧТО ОТПРАВЛЯЕМ (Для отладки "пустых" ответов)
-        # log.debug("llm_request_payload", messages_count=len(messages_to_send), last_message=history[-1] if history else None)
+        # Логируем payload для отладки (чтобы видеть, что уходит)
+        log.info("llm_payload_debug", payload_preview=str(messages_to_send)[:500])
 
         response = await client.chat.completions.create(
             model=MODEL_NAME,
@@ -65,10 +90,9 @@ async def generate_response(system_prompt: str, history: List[Dict[str, str]]) -
         
         content = response.choices[0].message.content
         
-        # Если API вернул None или пустоту
         if not content:
             log.warning("llm_returned_empty_string", duration=duration)
-            return "" # Возвращаем пустую строку, обработаем в worker
+            return "" 
 
         return content
 
@@ -78,6 +102,6 @@ async def generate_response(system_prompt: str, history: List[Dict[str, str]]) -
         
         log.error("llm_request_failed", error=error_msg, duration=duration)
         SYSTEM_ERRORS.labels(service="llm", error_type=type(e).__name__).inc()
-        await send_alert(e, context=f"LLM Service via Proxy ({MODEL_NAME})")
+        await send_alert(e, context=f"LLM Service via Proxy ({MODEL_NAME})") # Можно временно отключить алерт, чтобы не спамил
         
         raise e
