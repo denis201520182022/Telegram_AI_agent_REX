@@ -112,16 +112,33 @@ async def coach_reset_handler(callback: CallbackQuery, state: FSMContext):
     from src.bot.handlers.survey import start_coach_survey
     await start_coach_survey(callback.message, state)
 
+# src/bot/handlers/coach.py
+
 @router.callback_query(F.data == "coach_adapt")
 async def coach_adapt_handler(callback: CallbackQuery, state: FSMContext):
-    """Адаптация — просим выбрать новый режим."""
+    """Адаптация — просим выбрать новый режим и подгружаем старые ответы."""
+    user_id = callback.from_user.id
+    
+    async with async_session_maker() as session:
+        # 1. Достаем последнюю анкету пользователя
+        survey = await session.scalar(
+            select(UserSurvey)
+            .where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach')
+            .order_by(desc(UserSurvey.created_at))
+        )
+        existing_answers = survey.answers if survey else {}
+
+    # 2. Записываем в состояние: флаг адаптации И старые ответы
+    await state.update_data(is_adaptation=True, answers=existing_answers)
+    
+    # 3. Переводим в состояние выбора режима
+    await state.set_state(SurveyState.choosing_mode)
+
     await callback.message.edit_text(
         "Выберите новый формат для <b>адаптации</b> вашего текущего плана:",
         reply_markup=get_coach_mode_kb(),
         parse_mode="HTML"
     )
-    # Помечаем в FSM, что следующий выбор режима — это адаптация
-    await state.update_data(is_adaptation=True)
     await callback.answer()
 
 # Хендлер для выбора режима ПРИ АДАПТАЦИИ (перехватываем то, что обычно идет в survey)

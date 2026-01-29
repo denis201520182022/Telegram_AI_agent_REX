@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from sqlalchemy import select, desc
+import asyncio
 
 # База и модели
 from src.database.session import async_session_maker

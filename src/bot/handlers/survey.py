@@ -7,6 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import update
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from sqlalchemy import select, desc
 
 from src.utils.admin import is_admin
 from src.bot.keyboards.menu import get_main_menu
@@ -91,12 +92,13 @@ async def start_coach_survey(message: Message, state: FSMContext):
 # src/bot/handlers/survey.py
 
 # ... (импорты)
+# src/bot/handlers/survey.py
 
 @router.callback_query(SurveyState.choosing_mode, F.data.startswith("mode_"))
 async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
     selected_mode = callback.data.split("_")[1]
     
-    # 1. Загружаем все возможные вопросы для коуча из Redis
+    # 1. Загружаем все вопросы для коуча
     all_coach_questions = await redis_service.get_survey_config("coach")
     if not all_coach_questions:
         await callback.answer("Ошибка: вопросы не загружены.", show_alert=True)
@@ -104,49 +106,41 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
         
     data = await state.get_data()
     is_adaptation = data.get('is_adaptation', False)
-    
-    # 2. Определяем, какие категории вопросов нам нужны для нового режима
-    categories_needed = {"coach"}
+    current_answers = data.get('answers', {}) # Те самые ответы, что мы подгрузили выше
+
+    # 2. Определяем нужные категории для НОВОГО режима
+    categories_needed = {"coach"} # Базовые вопросы
     if selected_mode in ["nutrition", "combined"]:
         categories_needed.add("nutrition")
     if selected_mode in ["workout", "combined"]:
         categories_needed.add("workout")
     
-    # 3. Фильтруем вопросы, которые СООТВЕТСТВУЮТ новому режиму
+    # 3. Фильтруем вопросы по категориям
     target_questions = [q for q in all_coach_questions if q.get("category") in categories_needed]
     
-    # --- ЛОГИКА АДАПТАЦИИ ---
+    # --- ЛОГИКА УМНОЙ ФИЛЬТРАЦИИ ---
     final_questions_to_ask = []
-    
     if is_adaptation:
-        # Если это адаптация, нам нужны только НЕДОСТАЮЩИЕ вопросы
-        current_answers = data.get('answers', {})
-        current_keys = set(current_answers.keys())
-        
+        # Оставляем только те вопросы, ключей которых НЕТ в текущих ответах
         for q in target_questions:
-            if q['key'] not in current_keys:
+            if q['key'] not in current_answers:
                 final_questions_to_ask.append(q)
     else:
-        # Если это не адаптация (первый раз или сброс), задаем все вопросы
+        # Если не адаптация — задаем всё
         final_questions_to_ask = target_questions
+        current_answers = {} # Сбрасываем ответы для чистого прохождения
 
-    # 4. Проверяем, есть ли что спрашивать
+    # 4. Если после фильтрации вопросов не осталось — сразу на генерацию
     if not final_questions_to_ask:
-        # Если вопросов нет (например, перешли с combined на nutrition), то сразу отправляем на генерацию
-        await callback.answer("Все данные уже есть, адаптирую план...", show_alert=True)
-        await callback.message.edit_text("⏳ <b>Адаптирую ваш план под новый формат...</b>", parse_mode="HTML")
-        
-        # Запускаем финальную стадию, как будто анкета пройдена
-        # Эта функция у нас уже есть в конце файла survey.py
+        await callback.message.edit_text("⏳ <b>Все данные уже есть. Начинаю адаптацию плана...</b>", parse_mode="HTML")
         return await finish_setup_for_adaptation(callback, state, selected_mode)
 
-    # 5. Сохраняем в состояние и начинаем опрос
+    # 5. Если вопросы есть — запускаем анкету
     await state.update_data(
         survey_mode=selected_mode,
-        questions=final_questions_to_ask, # <--- Задаем только отфильтрованные вопросы
+        questions=final_questions_to_ask,
         current_step=0,
-        # answers остаются старыми при адаптации! Новые будут добавляться.
-        # Если не адаптация, то answers уже пустые.
+        answers=current_answers, # Здесь уже лежат старые ответы
         msg_to_edit=callback.message.message_id
     )
     

@@ -81,12 +81,14 @@ async def process_task(message: aio_pika.IncomingMessage):
 
                     user_instruction = (
                         "[SYSTEM COMMAND] Сгенерируй полный план на основе анкеты. "
-                        "Используй ТОЛЬКО разрешенные теги HTML: <b>, <i>, <ul>, <li>, <pre>. "
+                        "Используй только <b>, <i>, <ul>, <li>. Для выделения цифр или кода используй тег <code>."
                         "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать <table>. "
                         "Сделай план максимально подробным."
                     )
                     ai_raw = await generate_response(system_text, [{"role": "user", "content": user_instruction}])
                     clean_text = clean_html_for_telegram(ai_raw)
+                    if len(clean_text) > 3800:
+                        clean_text = clean_text[:3800] + "..."
 
                     # ОБЕРТКА ПЛАНА
                     formatted_plan = f"<blockquote expandable>{clean_text}</blockquote>"
