@@ -296,6 +296,12 @@ async def process_text_answer(message: Message, state: FSMContext):
 
 async def _save_answer_and_next(message: Message, state: FSMContext, answer):
     data = await state.get_data()
+    # ДОБАВЛЯЕМ ПРОВЕРКУ ЗДЕСЬ
+    if 'answers' not in data:
+        # Если ключа answers нет, то логируем и инициализируем его
+        logger.error("answers_not_found_in_state", user_id=message.from_user.id, state_data=data)
+        await state.update_data(answers={}) # Инициализируем answers
+        data = await state.get_data() # Обновляем data, т.к. мы его изменили
     step = data['current_step']
     questions = data['questions']
     answers = data['answers']
