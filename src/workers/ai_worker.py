@@ -5,7 +5,7 @@ import time
 import aio_pika
 from sqlalchemy import select, update, desc
 from os.path import abspath, dirname
-
+from sqlalchemy.orm.attributes import flag_modified
 # Магия путей
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
 
@@ -170,6 +170,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                         })
 
                     user.coach_history = new_history
+                    flag_modified(user, "coach_history")
                     await session.commit()
                     
                     # Не отправляем пустое сообщение
@@ -226,9 +227,11 @@ async def process_task(message: aio_pika.IncomingMessage):
                     ai_raw = await generate_response(system_prompt, history_for_api)
                     clean_text = clean_html_for_telegram(ai_raw)
                     
-                    new_history = user.coach_history or []
+                    new_history = list(user.coach_history) if user.coach_history else []
                     new_history.append({'role': 'assistant', 'content': clean_text})
                     user.coach_history = new_history
+
+                    flag_modified(user, "coach_history") # <--- И ЗДЕСЬ ТОЖЕ
                     await session.commit()
 
                     if clean_text:
