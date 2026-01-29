@@ -89,7 +89,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                     clean_text = clean_html_for_telegram(ai_raw)
 
                     # ОБЕРТКА ПЛАНА (Делаем его раскрывающимся)
-                    formatted_plan = f"<expandable_blockquote>{clean_text}</expandable_blockquote>"
+                    formatted_plan = f"<blockquote expandable>{clean_text}</blockquote>"
 
                     # Сохраняем в БД уже обернутый текст
                     await session.execute(
@@ -173,7 +173,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                         new_plan_clean = clean_html_for_telegram(new_plan_raw)
 
                         # ОБЕРТКА (Для обновленного плана)
-                        formatted_new_plan = f"<expandable_blockquote>{new_plan_clean}</expandable_blockquote>"
+                        formatted_new_plan = f"<blockquote expandable>{clean_text}</blockquote>"
 
                         survey.current_plan = formatted_new_plan
                         # ...
