@@ -8,7 +8,9 @@ from src.bot.states import CoachState, SurveyState
 from src.database.session import async_session_maker
 from src.database.models import UserSurvey, User
 from src.services.rabbit import send_to_queue
-
+import asyncio 
+from sqlalchemy.orm.attributes import flag_modified
+from src.services.redis import redis_service
 # Клавиатуры
 from src.bot.keyboards.coach import (
     get_coach_menu, 
@@ -16,6 +18,7 @@ from src.bot.keyboards.coach import (
     get_change_format_choice_kb
 )
 from src.bot.keyboards.survey import get_coach_mode_kb
+
 
 router = Router()
 
@@ -160,45 +163,77 @@ async def process_adaptation_mode_selection(callback: CallbackQuery, state: FSMC
 
 # --- СВОБОДНОЕ ОБЩЕНИЕ ---
 # src/bot/handlers/coach.py
-
 @router.message(CoachState.chatting)
 async def process_chat_message(message: Message):
-    """Хендлер для текстовых сообщений ИИ-коучу."""
+    """
+    Хендлер для текстовых сообщений ИИ-коучу.
+    Реализовано: сохранение в историю БД и накопление сообщений (5 сек).
+    """
     user_id = message.from_user.id
     text = message.text
     
     if not text:
         return 
 
-    # 1. Обновляем историю чата в JSONB поле пользователя
+    # 1. СОХРАНЕНИЕ В ИСТОРИЮ (PostgreSQL)
+    # Мы записываем каждое сообщение сразу, чтобы история в базе была актуальной
     async with async_session_maker() as session:
-        # Получаем пользователя
         user = await session.get(User, user_id)
         if not user:
-            return # На всякий случай
+            return
 
-        # Получаем текущую историю или создаем пустой список
-        history = user.coach_history or []
+        # Создаем копию списка, чтобы SQLAlchemy увидел изменения
+        current_history = list(user.coach_history) if user.coach_history else []
+        current_history.append({"role": "user", "content": text})
         
-        # Добавляем новое сообщение
-        history.append({"role": "user", "content": text})
-        
-        # Ограничиваем историю, чтобы она не росла бесконечно (например, последние 20 сообщений)
-        # Это защитит нас от огромных счетов за API и медленных запросов
-        if len(history) > 20:
-            history = history[-20:]
+        # Лимит истории (20 сообщений), чтобы не раздувать контекст
+        if len(current_history) > 20:
+            current_history = current_history[-20:]
             
-        # Обновляем поле в БД
-        user.coach_history = history
+        user.coach_history = current_history
+        
+        # !!! ВАЖНО: говорим базе, что поле изменилось
+        flag_modified(user, "coach_history")
         await session.commit()
+
+    # 2. ЛОГИКА НАКОПЛЕНИЯ (Debounce через Redis)
+    buffer_key = f"coach_buffer:{user_id}"
+    wait_key = f"coach_wait:{user_id}"
+
+    # Дописываем сообщение в буфер Redis (через пробел)
+    # Твой RedisService позволяет обращаться к клиенту напрямую
+    await redis_service.client.append(buffer_key, f" {text}")
     
-    # 2. Визуальный эффект "печатает..."
+    # Проверяем, не запущен ли уже таймер для этого пользователя
+    if await redis_service.get(wait_key):
+        # Если таймер уже идет, просто выходим. 
+        # Текст уже в буфере, его заберет тот процесс, который запустил таймер.
+        return
+
+    # Если мы здесь — это первое сообщение в "пачке". Ставим замок на 10 сек.
+    await redis_service.set(wait_key, "1", ex=10)
+    
+    # Показываем, что бот думает
     await message.bot.send_chat_action(chat_id=user_id, action="typing")
     
-    # 3. Отправляем задачу в очередь ИИ
+    # Ждем 5 секунд, пока пользователь допишет остальные мысли
+    await asyncio.sleep(5)
+
+    # 3. ФОРМИРУЕМ ЗАДАЧУ ДЛЯ ИИ
+    # Забираем из Redis весь накопленный текст
+    full_text = await redis_service.get(buffer_key)
+    
+    # Очищаем временные ключи в Redis
+    await redis_service.delete(buffer_key)
+    await redis_service.delete(wait_key)
+
+    if not full_text:
+        return
+
+    # Отправляем одну агрегированную задачу в RabbitMQ
     task = {
         "user_id": user_id,
         "mode": "chat",
-        "text": text
+        "text": full_text.strip()
     }
     await send_to_queue("q_ai_generation", task)
