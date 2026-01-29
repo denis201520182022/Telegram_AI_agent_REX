@@ -81,19 +81,21 @@ async def process_task(message: aio_pika.IncomingMessage):
 
                     user_instruction = (
                         "[SYSTEM COMMAND] Сгенерируй полный план на основе анкеты. "
-                        "Это первая выдача, поэтому сделай её максимально подробной, "
-                        "структурированной и мотивирующей. Используй HTML."
+                        "Используй ТОЛЬКО разрешенные теги HTML: <b>, <i>, <ul>, <li>, <pre>. "
+                        "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать <table>. "
+                        "Сделай план максимально подробным."
                     )
                     ai_raw = await generate_response(system_text, [{"role": "user", "content": user_instruction}])
                     clean_text = clean_html_for_telegram(ai_raw)
-                    
-                    log.info("ai_response_text", raw_text=ai_raw, clean_text=clean_text)
 
-                    # Обновляем анкету
+                    # ОБЕРТКА ПЛАНА (Делаем его раскрывающимся)
+                    formatted_plan = f"<expandable_blockquote>{clean_text}</expandable_blockquote>"
+
+                    # Сохраняем в БД уже обернутый текст
                     await session.execute(
                         update(UserSurvey).where(UserSurvey.id == survey_id).values(
-                            ai_recommendation=clean_text,
-                            current_plan=clean_text
+                            ai_recommendation=formatted_plan,
+                            current_plan=formatted_plan
                         )
                     )
 
@@ -160,8 +162,8 @@ async def process_task(message: aio_pika.IncomingMessage):
                         update_instruction = {
                             "role": "user", 
                             "content": "[SYSTEM COMMAND] На основе нашего диалога составь ПОЛНУЮ обновленную версию плана. "
-                                    "Сделай это максимально подробно и красиво. Используй HTML структуру. "
-                                    "Выдай ТОЛЬКО текст плана, без приветствий."
+                                    "Используй HTML (<b>, <i>, <ul>, <li>). Таблицы <table> ЗАПРЕЩЕНЫ. "
+                                    "Выдай ТОЛЬКО текст плана."
                         }
                         
                         # Отправляем всю историю + эту жесткую команду
@@ -169,17 +171,15 @@ async def process_task(message: aio_pika.IncomingMessage):
                         
                         new_plan_raw = await generate_response(system_prompt, history_for_update)
                         new_plan_clean = clean_html_for_telegram(new_plan_raw)
-                        
-                        # Сохраняем в "актуальное" поле анкеты
-                        survey.current_plan = new_plan_clean
-                        
-                        # Добавляем в историю как важное событие
-                        new_history.append({'role': 'assistant', 'content': f"🔄 ПЛАН ОБНОВЛЕН:\n{new_plan_clean}"})
-                        
-                        # Отправляем пользователю отдельным красивым сообщением
+
+                        # ОБЕРТКА (Для обновленного плана)
+                        formatted_new_plan = f"<expandable_blockquote>{new_plan_clean}</expandable_blockquote>"
+
+                        survey.current_plan = formatted_new_plan
+                        # ...
                         await send_to_queue("q_notifications", {
                             "user_id": user_id,
-                            "text": f"🪄 <b>Я внес изменения в твой план:</b>\n\n{new_plan_clean}"
+                            "text": f"🪄 <b>Я внес изменения в твой план:</b>\n\n{formatted_new_plan}"
                         })
 
                     user.coach_history = new_history
