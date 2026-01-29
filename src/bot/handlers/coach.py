@@ -105,10 +105,24 @@ async def change_mode_start(callback: CallbackQuery):
     )
     await callback.answer()
 
+# src/bot/handlers/coach.py
+
 @router.callback_query(F.data == "coach_reset")
 async def coach_reset_handler(callback: CallbackQuery, state: FSMContext):
-    """Полный сброс — отправляем на анкету."""
-    await callback.answer()
+    """Полный сброс — очищаем историю в БД и отправляем на анкету."""
+    user_id = callback.from_user.id
+    
+    async with async_session_maker() as session:
+        # 1. Сбрасываем историю в базе данных в пустой список
+        await session.execute(
+            update(User).where(User.user_id == user_id).values(coach_history=[])
+        )
+        await session.commit()
+    
+    await callback.answer("История очищена 🗑", show_alert=True)
+    
+    # 2. Очищаем FSM и запускаем анкету
+    await state.clear()
     from src.bot.handlers.survey import start_coach_survey
     await start_coach_survey(callback.message, state)
 

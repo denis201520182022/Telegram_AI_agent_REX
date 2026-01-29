@@ -151,35 +151,62 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
 # --- ВАЖНО: Добавьте новую вспомогательную функцию в конец файла ---
 # Она нужна для случая, когда дозадавать вопросы не нужно
 async def finish_setup_for_adaptation(callback: CallbackQuery, state: FSMContext, new_sub_mode: str):
+    """
+    Завершает процесс адаптации, если новых вопросов задавать не потребовалось.
+    Обновляет режим в БД и отправляет задачу ИИ.
+    """
     user_id = callback.from_user.id
     data = await state.get_data()
     answers = data.get('answers', {})
     
     async with async_session_maker() as session:
-        # Ищем последнюю анкету, чтобы передать её ID воркеру
-        survey = await session.scalar(
-            select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach').order_by(desc(UserSurvey.created_at))
+        # 1. ОБЯЗАТЕЛЬНО обновляем coach_mode в таблице User
+        # Чтобы ИИ воркер при генерации промпта понимал новый контекст (диетолог/тренер)
+        await session.execute(
+            update(User).where(User.user_id == user_id).values(coach_mode=new_sub_mode)
         )
+
+        # 2. Обновляем саму анкету
+        survey = await session.scalar(
+            select(UserSurvey)
+            .where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach')
+            .order_by(desc(UserSurvey.created_at))
+        )
+        
         if survey:
-            # Обновляем ответы в существующей анкете (на случай, если они менялись)
+            # Обновляем ответы (если в процессе адаптации что-то добавилось) и под-режим
             survey.answers = answers
-            survey.sub_mode = new_sub_mode # Обновляем под-режим
+            survey.sub_mode = new_sub_mode
             survey_id = survey.id
-        else: # Маловероятно, но на всякий случай
-            new_survey = UserSurvey(user_id=user_id, mode='coach', sub_mode=new_sub_mode, answers=answers, survey_config_id=1)
+        else:
+            # Если вдруг анкеты не было (защита от ошибок)
+            new_survey = UserSurvey(
+                user_id=user_id, 
+                mode='coach', 
+                sub_mode=new_sub_mode, 
+                answers=answers, 
+                survey_config_id=1
+            )
             session.add(new_survey)
             await session.flush()
             survey_id = new_survey.id
         
         await session.commit()
 
-    # Отправляем задачу воркеру с флагом адаптации
+    # 3. Отправляем задачу воркеру с флагом адаптации (история в БД НЕ ТРОНУТА)
     task = {
-        "user_id": user_id, "mode": "coach", "sub_mode": new_sub_mode,
-        "answers": answers, "survey_id": survey_id, "is_adaptation": True
+        "user_id": user_id, 
+        "mode": "coach", 
+        "sub_mode": new_sub_mode,
+        "answers": answers, 
+        "survey_id": survey_id, 
+        "is_adaptation": True
     }
     await send_to_queue("q_ai_generation", task)
+    
+    # 4. Переводим в режим чата и очищаем временные флаги анкеты
     await state.set_state(CoachState.chatting)
+    await state.update_data(is_adaptation=False, questions=None, current_step=0)
 
 # --- 2. ЗАДАЕМ ВОПРОСЫ ---
 async def _ask_question(message: Message, state: FSMContext):

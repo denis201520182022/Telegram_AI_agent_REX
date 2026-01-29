@@ -37,6 +37,7 @@ async def safe_job_run(job_func, job_id, *args, **kwargs):
         await send_alert(e, context=f"Scheduler Job: {job_id}")
 
 # --- ЗАДАЧИ ---
+# src/workers/scheduler.py
 
 async def check_tracking_times():
     """
@@ -44,10 +45,21 @@ async def check_tracking_times():
     """
     logger.info("tracking_check_started")
     now_utc = datetime.datetime.now(datetime.timezone.utc)
+    
+    # Не забудь вытащить bot_id для ключа FSM
+    bot_id = settings.BOT_TOKEN.get_secret_value().split(':')[1]
 
     async with async_session_maker() as session:
-        # ... (запрос к БД остается таким же)
-        stmt = select(User).where(...)
+        # ЗАМЕНИТЕ ВАШУ СТРОКУ С (...) НА ЭТУ:
+        stmt = select(User).where(
+            and_(
+                User.is_tracking_enabled == True,
+                User.tracking_time.is_not(None),
+                User.subscription_expires_at > func.now()
+            )
+        )
+        # -------------------------------------------
+        
         users = (await session.execute(stmt)).scalars().all()
         
         triggered_count = 0
@@ -56,19 +68,23 @@ async def check_tracking_times():
                 user_tz = pytz.timezone(user.timezone)
                 user_local_time = now_utc.astimezone(user_tz)
                 
+                # Проверяем совпадение часа
                 if user_local_time.hour == user.tracking_time.hour:
                     lock_key = f"tracking_sent:{user.user_id}:{user_local_time.date()}"
                     if await redis_service.get(lock_key):
                         continue
 
-                    # --- НОВАЯ ЛОГИКА ---
-                    # Просто отправляем задачу в AI воркер
+                    # Отправляем задачу в AI воркер
                     await send_to_queue("q_ai_generation", {
                         "user_id": user.user_id,
-                        "mode": "tracking_trigger" # Новый, специальный режим
+                        "mode": "tracking_trigger" 
                     })
+
+                    # Принудительно ставим состояние chatting в Redis
+                    state_key = f"fsm:{bot_id}:{user.user_id}:{user.user_id}:state"
+                    await redis_service.client.set(state_key, CoachState.chatting.state)
                     
-                    # Лочим отправку на этот день (на 20 часов)
+                    # Лочим отправку на этот день
                     await redis_service.set(lock_key, "1", ex=72000)
                     triggered_count += 1
                     
@@ -77,7 +93,6 @@ async def check_tracking_times():
                 continue
 
     logger.info("tracking_check_completed", sent_count=triggered_count)
-# src/workers/scheduler.py
 
 async def update_daily_horoscopes():
     """Генерирует базу гороскопов на день, используя промпт из Google Sheets."""
