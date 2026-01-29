@@ -151,6 +151,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                     should_update_full_plan = "[UPDATE_PLAN]" in ai_raw
                     final_reply = ai_raw.replace("[UPDATE_PLAN]", "").strip()
                     clean_text = clean_html_for_telegram(final_reply)
+                    log.info("ai_response_text", raw_text=ai_raw, clean_text=clean_text)
 
                     # Сохраняем ответ ИИ в историю
                     new_history = user.coach_history or []
