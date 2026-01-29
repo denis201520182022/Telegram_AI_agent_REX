@@ -159,6 +159,7 @@ async def process_adaptation_mode_selection(callback: CallbackQuery, state: FSMC
     await callback.answer()
 
 # --- СВОБОДНОЕ ОБЩЕНИЕ ---
+# src/bot/handlers/coach.py
 
 @router.message(CoachState.chatting)
 async def process_chat_message(message: Message):
@@ -169,9 +170,26 @@ async def process_chat_message(message: Message):
     if not text:
         return 
 
-    # 1. Сохраняем сообщение пользователя в историю
+    # 1. Обновляем историю чата в JSONB поле пользователя
     async with async_session_maker() as session:
-        session.add(ChatMessage(user_id=user_id, role='user', content=text))
+        # Получаем пользователя
+        user = await session.get(User, user_id)
+        if not user:
+            return # На всякий случай
+
+        # Получаем текущую историю или создаем пустой список
+        history = user.coach_history or []
+        
+        # Добавляем новое сообщение
+        history.append({"role": "user", "content": text})
+        
+        # Ограничиваем историю, чтобы она не росла бесконечно (например, последние 20 сообщений)
+        # Это защитит нас от огромных счетов за API и медленных запросов
+        if len(history) > 20:
+            history = history[-20:]
+            
+        # Обновляем поле в БД
+        user.coach_history = history
         await session.commit()
     
     # 2. Визуальный эффект "печатает..."

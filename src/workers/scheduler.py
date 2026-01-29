@@ -41,21 +41,13 @@ async def safe_job_run(job_func, job_id, *args, **kwargs):
 async def check_tracking_times():
     """
     Проверяет часовые пояса пользователей и инициирует общение с ИИ коучем.
-    Срабатывает раз в час.
     """
     logger.info("tracking_check_started")
     now_utc = datetime.datetime.now(datetime.timezone.utc)
-    bot_id = settings.BOT_TOKEN.get_secret_value().split(':')[1] # Для ключа FSM
 
     async with async_session_maker() as session:
-        # Ищем пользователей с активным трекингом и подпиской
-        stmt = select(User).where(
-            and_(
-                User.is_tracking_enabled == True,
-                User.tracking_time.is_not(None),
-                User.subscription_expires_at > func.now()
-            )
-        )
+        # ... (запрос к БД остается таким же)
+        stmt = select(User).where(...)
         users = (await session.execute(stmt)).scalars().all()
         
         triggered_count = 0
@@ -64,43 +56,17 @@ async def check_tracking_times():
                 user_tz = pytz.timezone(user.timezone)
                 user_local_time = now_utc.astimezone(user_tz)
                 
-                # Проверяем совпадение часа
                 if user_local_time.hour == user.tracking_time.hour:
                     lock_key = f"tracking_sent:{user.user_id}:{user_local_time.date()}"
                     if await redis_service.get(lock_key):
                         continue
 
-                    # Формируем контекстный запрос к ИИ
-                    # Достаем цель из анкеты, если она есть
-                    survey = await session.scalar(
-                        select(UserSurvey).where(
-                            UserSurvey.user_id == user.user_id, 
-                            UserSurvey.mode == 'coach'
-                        ).order_by(UserSurvey.created_at.desc())
-                    )
-                    goal = survey.answers.get('goal', 'здоровье') if survey else "здоровье"
-
-                    system_prompt = (
-                        f"Ты заботливый ИИ-коуч. Твой клиент поставил цель: {goal}. "
-                        f"Сейчас у него {user_local_time.strftime('%H:%M')}. "
-                        "Спроси его коротко и вовлекающе, как прошел его день в контексте цели. "
-                        "Используй эмодзи. Максимум 2 предложения."
-                    )
-                    
-                    ai_text_raw = await generate_response(system_prompt, "Инициируй ежедневный трекинг.")
-                    ai_text = clean_html_for_telegram(ai_text_raw)
-                    
-                    # Отправляем сообщение в очередь
-                    await send_to_queue("q_notifications", {
+                    # --- НОВАЯ ЛОГИКА ---
+                    # Просто отправляем задачу в AI воркер
+                    await send_to_queue("q_ai_generation", {
                         "user_id": user.user_id,
-                        "text": f"🔔 <b>Контроль прогресса</b>\n\n{ai_text}"
+                        "mode": "tracking_trigger" # Новый, специальный режим
                     })
-
-                    # ВАЖНО: Принудительно ставим пользователю состояние "chatting" в Redis,
-                    # чтобы его ответ сразу попал в AI Worker (режим коуча включен).
-                    # Формат ключа aiogram 3: fsm:<bot_id>:<chat_id>:<user_id>:state
-                    state_key = f"fsm:{bot_id}:{user.user_id}:{user.user_id}:state"
-                    await redis_service.client.set(state_key, CoachState.chatting.state)
                     
                     # Лочим отправку на этот день (на 20 часов)
                     await redis_service.set(lock_key, "1", ex=72000)

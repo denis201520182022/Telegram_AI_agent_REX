@@ -39,6 +39,8 @@ class User(Base):
     
     # Принял ли политику обработки данных
     has_accepted_policy: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+    coach_history: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # --------------------------------------
 
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
@@ -46,22 +48,10 @@ class User(Base):
     # Связи
     surveys: Mapped[list["UserSurvey"]] = relationship(back_populates="user")
     qr_activation: Mapped["QRCode"] = relationship(back_populates="activated_by_user", uselist=False)
-    chat_history: Mapped[list["ChatMessage"]] = relationship(back_populates="user")
+    
 
 
-# 2. История сообщений (ДЛЯ КОНТЕКСТА ИИ) — НОВАЯ ТАБЛИЦА
-class ChatMessage(Base):
-    __tablename__ = 'chat_messages'
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey('users.user_id'))
-    
-    role: Mapped[str] = mapped_column(String(20)) # 'user' или 'assistant'
-    content: Mapped[str] = mapped_column(Text)    # Текст сообщения
-    
-    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
-    
-    user: Mapped["User"] = relationship(back_populates="chat_history")
 
 
 # 3. QR Коды (Без изменений)

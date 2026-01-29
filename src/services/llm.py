@@ -37,27 +37,25 @@ client = AsyncOpenAI(
     http_client=http_client
 )
 
-async def generate_response(system_prompt: str, user_content: str) -> str:
+async def generate_response(system_prompt: str, history: List[Dict[str, str]]) -> str:
     """
     Генерация ответа через Groq (Llama-3.3).
-    Запрос идет через SQUID прокси для обхода блокировок 403.
+    Принимает системный промпт и историю сообщений.
     """
     start_time = time.time()
     
-    # Очень быстрая и мощная модель
     MODEL_NAME = "llama-3.3-70b-versatile" 
-
     log = logger.bind(service="llm_client", provider="groq", model=MODEL_NAME)
 
     try:
+        # Собираем сообщения: сначала системное, потом вся история
+        messages_to_send = [{"role": "system", "content": system_prompt}] + history
+
         response = await client.chat.completions.create(
             model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ],
+            messages=messages_to_send,
             temperature=0.7,
-            max_tokens=2000, # Немного увеличим для подробных планов
+            max_tokens=2000,
             stream=False
         )
         

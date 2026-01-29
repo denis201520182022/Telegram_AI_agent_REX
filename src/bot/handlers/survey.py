@@ -85,49 +85,104 @@ async def start_coach_survey(message: Message, state: FSMContext):
     )
     await state.set_state(SurveyState.choosing_mode)
 
+# src/bot/handlers/survey.py
+
+# ... (импорты)
+
 @router.callback_query(SurveyState.choosing_mode, F.data.startswith("mode_"))
 async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
-    # mode_nutrition -> nutrition
     selected_mode = callback.data.split("_")[1]
     
-    # 1. Загружаем вопросы из Redis
-    all_questions = await redis_service.get_survey_config("coach")
-    if not all_questions:
+    # 1. Загружаем все возможные вопросы для коуча из Redis
+    all_coach_questions = await redis_service.get_survey_config("coach")
+    if not all_coach_questions:
         await callback.answer("Ошибка: вопросы не загружены.", show_alert=True)
         return
-
-    # 2. Фильтруем вопросы
-    # common - всегда
-    # nutrition - если mode in [nutrition, combined]
-    # workout - если mode in [workout, combined]
+        
+    data = await state.get_data()
+    is_adaptation = data.get('is_adaptation', False)
     
+    # 2. Определяем, какие категории вопросов нам нужны для нового режима
     categories_needed = {"common"}
     if selected_mode in ["nutrition", "combined"]:
         categories_needed.add("nutrition")
     if selected_mode in ["workout", "combined"]:
         categories_needed.add("workout")
-        
-    filtered_questions = [
-        q for q in all_questions 
-        if q.get("category") in categories_needed
-    ]
     
-    if not filtered_questions:
-        await callback.answer("Ошибка: нет вопросов для этого режима.", show_alert=True)
-        return
+    # 3. Фильтруем вопросы, которые СООТВЕТСТВУЮТ новому режиму
+    target_questions = [q for q in all_coach_questions if q.get("category") in categories_needed]
+    
+    # --- ЛОГИКА АДАПТАЦИИ ---
+    final_questions_to_ask = []
+    
+    if is_adaptation:
+        # Если это адаптация, нам нужны только НЕДОСТАЮЩИЕ вопросы
+        current_answers = data.get('answers', {})
+        current_keys = set(current_answers.keys())
+        
+        for q in target_questions:
+            if q['key'] not in current_keys:
+                final_questions_to_ask.append(q)
+    else:
+        # Если это не адаптация (первый раз или сброс), задаем все вопросы
+        final_questions_to_ask = target_questions
 
-    # 3. Сохраняем в состояние
+    # 4. Проверяем, есть ли что спрашивать
+    if not final_questions_to_ask:
+        # Если вопросов нет (например, перешли с combined на nutrition), то сразу отправляем на генерацию
+        await callback.answer("Все данные уже есть, адаптирую план...", show_alert=True)
+        await callback.message.edit_text("⏳ <b>Адаптирую ваш план под новый формат...</b>", parse_mode="HTML")
+        
+        # Запускаем финальную стадию, как будто анкета пройдена
+        # Эта функция у нас уже есть в конце файла survey.py
+        return await finish_setup_for_adaptation(callback, state, selected_mode)
+
+    # 5. Сохраняем в состояние и начинаем опрос
     await state.update_data(
         survey_mode=selected_mode,
-        questions=filtered_questions,
+        questions=final_questions_to_ask, # <--- Задаем только отфильтрованные вопросы
         current_step=0,
-        answers={},
-        msg_to_edit=callback.message.message_id # Будем редактировать это сообщение
+        # answers остаются старыми при адаптации! Новые будут добавляться.
+        # Если не адаптация, то answers уже пустые.
+        msg_to_edit=callback.message.message_id
     )
     
     await state.set_state(SurveyState.in_progress)
     await _ask_question(callback.message, state)
     await callback.answer()
+
+# --- ВАЖНО: Добавьте новую вспомогательную функцию в конец файла ---
+# Она нужна для случая, когда дозадавать вопросы не нужно
+async def finish_setup_for_adaptation(callback: CallbackQuery, state: FSMContext, new_sub_mode: str):
+    user_id = callback.from_user.id
+    data = await state.get_data()
+    answers = data.get('answers', {})
+    
+    async with async_session_maker() as session:
+        # Ищем последнюю анкету, чтобы передать её ID воркеру
+        survey = await session.scalar(
+            select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach').order_by(desc(UserSurvey.created_at))
+        )
+        if survey:
+            # Обновляем ответы в существующей анкете (на случай, если они менялись)
+            survey.answers = answers
+            survey.sub_mode = new_sub_mode # Обновляем под-режим
+            survey_id = survey.id
+        else: # Маловероятно, но на всякий случай
+            new_survey = UserSurvey(user_id=user_id, mode='coach', sub_mode=new_sub_mode, answers=answers, survey_config_id=1)
+            session.add(new_survey)
+            await session.flush()
+            survey_id = new_survey.id
+        
+        await session.commit()
+
+    # Отправляем задачу воркеру с флагом адаптации
+    task = {
+        "user_id": user_id, "mode": "coach", "sub_mode": new_sub_mode,
+        "answers": answers, "survey_id": survey_id, "is_adaptation": True
+    }
+    await send_to_queue("q_ai_generation", task)
+    await state.set_state(CoachState.chatting)
 
 # --- 2. ЗАДАЕМ ВОПРОСЫ ---
 async def _ask_question(message: Message, state: FSMContext):
@@ -254,9 +309,13 @@ async def _save_answer_and_next(message: Message, state: FSMContext, answer):
 
 # --- 4. ФИНАЛ АНКЕТЫ И ПОДТВЕРЖДЕНИЕ ---
 
+# src/bot/handlers/survey.py
+
 async def _finish_questions(message: Message, state: FSMContext):
     data = await state.get_data()
     answers = data['answers']
+    mode = data.get('survey_mode')
+    is_adaptation = data.get('is_adaptation', False)
     
     # Формируем красивый список ответов
     summary = "📋 <b>Ваши ответы:</b>\n\n"
@@ -284,6 +343,10 @@ async def _finish_questions(message: Message, state: FSMContext):
             await message.answer(summary, reply_markup=get_confirm_kb())
     else:
         await message.answer(summary, reply_markup=get_confirm_kb())
+        
+    # Если адаптация и вопросов не было, то сразу идем в финальную обработку
+    if is_adaptation and not data.get("questions"):
+        return await confirm_survey(message, state)
         
     await state.set_state(SurveyState.confirmation)
 
