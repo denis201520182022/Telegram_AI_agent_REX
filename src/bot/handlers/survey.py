@@ -369,11 +369,24 @@ async def _finish_questions(message: Message, state: FSMContext):
     summary = "📋 <b>Ваши ответы:</b>\n\n"
     questions_map = {q['key']: q['text'] for q in data['questions']}
     
+    # Список ключей, которые МЫ НЕ ПОКАЗЫВАЕМ пользователю (технические)
+    hidden_keys = ["birth_date"]
+
     for key, val in answers.items():
+        if key in hidden_keys:
+            continue
+            
         q_text = questions_map.get(key, key)
-        # Обрезаем вопрос, если длинный
-        short_q = (q_text[:30] + '..') if len(q_text) > 30 else q_text
-        summary += f"▫️ <i>{short_q}</i>: <b>{val}</b>\n"
+        # Чистим текст вопроса от лишних символов для сводки
+        short_q = q_text.replace("✅ ", "").replace("📅 ", "").replace("🗓 ", "").split('?')[0]
+        
+        # Если это месяц, можно вернуть название обратно для красоты
+        if key == "birth_month":
+            inv_months = {"01":"Январь","02":"Февраль","03":"Март","04":"Апрель","05":"Май","06":"Июнь",
+                          "07":"Июль","08":"Август","09":"Сентябрь","10":"Октябрь","11":"Ноябрь","12":"Декабрь"}
+            val = inv_months.get(val, val)
+
+        summary += f"▫️ {short_q}: <b>{val}</b>\n"
         
     summary += "\nПроверьте"
     
@@ -400,8 +413,19 @@ async def _finish_questions(message: Message, state: FSMContext):
 
 @router.callback_query(SurveyState.confirmation, F.data == "survey_restart")
 async def restart_survey(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    mode = data.get('survey_mode') # Достаем текущий режим из памяти
+    
     await callback.answer("🔄 Заполняем заново...")
-    await start_coach_survey(callback.message, state)
+    
+    # Если это один из под-режимов коуча, возвращаем на выбор "Питание/Спорт"
+    if mode in ['nutrition', 'workout', 'combined']:
+        await start_coach_survey(callback.message, state)
+    else:
+        # Иначе запускаем ту же самую анкету (dating, natal, horoscope)
+        await start_generic_survey(callback.message, state, mode=mode)
+
+
 @router.callback_query(SurveyState.confirmation, F.data == "survey_confirm")
 async def confirm_survey(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()

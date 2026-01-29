@@ -111,7 +111,10 @@ async def get_daily_forecast(message: Message):
     user_id = message.from_user.id
     async with async_session_maker() as session:
         survey = await session.scalar(
-            select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'horoscope')
+            select(UserSurvey)
+            .where(UserSurvey.user_id == user_id, UserSurvey.mode == 'horoscope')
+            .order_by(desc(UserSurvey.created_at)) # Берем самую новую
+            .limit(1)
         )
         
         if not survey or not survey.answers:
@@ -181,7 +184,10 @@ async def natal_chart_entry(message: Message, state: FSMContext):
         if admin_status or (user and user.natal_chart_credits > 0):
             # Ищем анкету именно для НАТАЛЬНОЙ КАРТЫ
             survey = await session.scalar(
-                select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'natal')
+                select(UserSurvey)
+                .where(UserSurvey.user_id == user_id, UserSurvey.mode == 'natal')
+                .order_by(desc(UserSurvey.created_at)) # <--- Добавить это
+                .limit(1)
             )
             
             if not survey:
