@@ -34,23 +34,25 @@ async def safe_delete(bot, chat_id, message_id):
     except Exception: pass
 
 def get_options_keyboard(options: list) -> types.InlineKeyboardMarkup:
-    """Генерирует инлайн-кнопки для ответов"""
+    """Генерирует компактные инлайн-кнопки для ответов"""
     keyboard = []
     row = []
+    
+    # Определяем ширину ряда: если варианты короткие (числа), делаем 6 в ряд
+    # Если длинные — 2 в ряд
+    max_in_row = 6 if all(len(str(opt)) <= 3 for opt in options) else 2
+
     for opt in options:
-        # Обрезаем, чтобы влезло в callback_data
         cb_data = f"ans_{opt}"[:64]
-        row.append(types.InlineKeyboardButton(text=opt, callback_data=cb_data))
-        if len(row) == 2:
+        row.append(types.InlineKeyboardButton(text=str(opt), callback_data=cb_data))
+        if len(row) == max_in_row:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
     
-    # Добавляем кнопку отмены вниз
     keyboard.append([types.InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_survey")])
     return types.InlineKeyboardMarkup(inline_keyboard=keyboard)
-
 # --- 1. СТАРТ АНКЕТЫ ---
 
 # Универсальный старт анкеты
@@ -104,7 +106,7 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
     is_adaptation = data.get('is_adaptation', False)
     
     # 2. Определяем, какие категории вопросов нам нужны для нового режима
-    categories_needed = {"common"}
+    categories_needed = {"coach"}
     if selected_mode in ["nutrition", "combined"]:
         categories_needed.add("nutrition")
     if selected_mode in ["workout", "combined"]:
@@ -307,10 +309,28 @@ async def _save_answer_and_next(message: Message, state: FSMContext, answer):
     questions = data['questions']
     answers = data['answers']
     
-    # Сохраняем по ключу (weight, height и т.д.)
     current_key = questions[step]['key']
+    
+    # ЛОГИКА ТРАНСФОРМАЦИИ МЕСЯЦЕВ
+    months_map = {
+        "Январь": "01", "Февраль": "02", "Март": "03", "Апрель": "04",
+        "Май": "05", "Июнь": "06", "Июль": "07", "Август": "08",
+        "Сентябрь": "09", "Октябрь": "10", "Ноябрь": "11", "Декабрь": "12"
+    }
+    if current_key == "birth_month":
+        answer = months_map.get(answer, "01")
+    
+    # Сохраняем текущий ответ
     answers[current_key] = answer
     
+    # ПРОВЕРКА: Если мы получили и день, и месяц (и год для наталки), склеиваем их в birth_date
+    if "birth_day" in answers and "birth_month" in answers:
+        day = str(answers["birth_day"]).zfill(2)
+        month = str(answers["birth_month"])
+        # Год берем из ответов, если его нет (для гороскопа) — ставим любой дефолтный
+        year = answers.get("birth_year", "2000") 
+        answers["birth_date"] = f"{year}-{month}-{day}"
+
     await state.update_data(answers=answers, current_step=step + 1)
     await _ask_question(message, state)
 

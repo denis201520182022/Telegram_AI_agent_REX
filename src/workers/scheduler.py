@@ -77,22 +77,40 @@ async def check_tracking_times():
                 continue
 
     logger.info("tracking_check_completed", sent_count=triggered_count)
+# src/workers/scheduler.py
 
 async def update_daily_horoscopes():
-    """Генерирует базу гороскопов на день."""
+    """Генерирует базу гороскопов на день, используя промпт из Google Sheets."""
     logger.info("horoscope_update_started")
     from src.services.horoscope import RUS_SIGNS
 
+    # 1. Получаем шаблон промпта из Redis (ключ 'horoscope')
+    # Тот самый текст, который вы написали в таблице
+    base_prompt = await redis_service.get_prompt("horoscope")
+    
+    if not base_prompt:
+        logger.warning("horoscope_prompt_not_found_in_redis_using_fallback")
+        base_prompt = "Напиши гороскоп на сегодня для знака {sign}. Используй HTML."
+
     for sign_en, sign_ru in RUS_SIGNS.items():
         try:
-            prompt = (
-                f"Напиши 3 варианта гороскопа на сегодня для знака {sign_ru}. "
-                "1 вариант: Вдохновляющий. 2 вариант: Прагматичный. 3 вариант: Осторожный. "
-                "Раздели варианты строго символом | без лишнего текста."
+            # 2. Подставляем имя знака в промпт из таблицы
+            # В таблице у вас написано: "...прогноз на сегодня для знака <b>{sign}</b>"
+            final_user_prompt = base_prompt.replace("{sign}", sign_ru)
+
+            # 3. Делаем запрос к ИИ
+            # Передаем как список сообщений для совместимости с новой логикой llm.py
+            res = await generate_response(
+                "Ты профессиональный астролог", 
+                [{"role": "user", "content": final_user_prompt}]
             )
-            res = await generate_response("Ты профессиональный астролог", prompt)
-            # Сохраняем в Redis на 25 часов
-            await redis_service.set(f"horoscope_daily:{sign_en}", res, ex=90000)
+            
+            if res:
+                # Очищаем от лишнего мусора, если ИИ его добавил
+                clean_res = clean_html_for_telegram(res)
+                # Сохраняем в Redis на 25 часов
+                await redis_service.set(f"horoscope_daily:{sign_en}", clean_res, ex=90000)
+                
         except Exception as e:
             logger.error("horoscope_gen_failed", sign=sign_en, error=str(e))
 

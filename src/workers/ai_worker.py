@@ -88,10 +88,9 @@ async def process_task(message: aio_pika.IncomingMessage):
                     ai_raw = await generate_response(system_text, [{"role": "user", "content": user_instruction}])
                     clean_text = clean_html_for_telegram(ai_raw)
 
-                    # ОБЕРТКА ПЛАНА (Делаем его раскрывающимся)
+                    # ОБЕРТКА ПЛАНА
                     formatted_plan = f"<blockquote expandable>{clean_text}</blockquote>"
 
-                    # Сохраняем в БД уже обернутый текст
                     await session.execute(
                         update(UserSurvey).where(UserSurvey.id == survey_id).values(
                             ai_recommendation=formatted_plan,
@@ -99,18 +98,19 @@ async def process_task(message: aio_pika.IncomingMessage):
                         )
                     )
 
-                    # Инициализируем историю
                     new_history = user.coach_history or []
-                    new_history.append({"role": "assistant", "content": clean_text})
+                    new_history.append({"role": "assistant", "content": formatted_plan}) # В историю тоже с тегом
                     user.coach_history = new_history
-
+                    flag_modified(user, "coach_history")
                     await session.commit()
 
+                    # Отправляем ЮЗЕРУ именно форматированный план
                     await send_to_queue("q_notifications", {
                         "user_id": user_id,
-                        "text": f"✅ <b>Ваш персональный план готов!</b>\n\n{clean_text}\n\n<i>Теперь я всегда на связи. Можешь задавать уточняющие вопросы!</i>"
+                        "text": f"✅ <b>Ваш персональный план готов!</b>\n\n{formatted_plan}\n\n<i>Теперь я всегда на связи.</i>"
                     })
 
+                # --- СЦЕНАРИЙ 2: ЧАТ (Свободное общение) ---
                 # --- СЦЕНАРИЙ 2: ЧАТ (Свободное общение) ---
                 elif mode == 'chat':
                     user = await session.get(User, user_id)
@@ -132,65 +132,57 @@ async def process_task(message: aio_pika.IncomingMessage):
                         f"Данные клиента: {json.dumps(answers, ensure_ascii=False)}.\n"
                         f"Текущий актуальный план: {current_plan}\n\n"
                         "ИНСТРУКЦИЯ:\n"
-                        "1. Отвечай кратко и по делу, основываясь на всей истории диалога.\n"
-                        "2. Если клиент просит изменить что-то в плане — подтверди это в диалоге.\n"
-                        "3. Если правок накопилось много, в конце сообщения напиши: '[UPDATE_PLAN]'. Я это увижу и обновлю весь текст плана.\n"
-                        "4. Используй HTML."
+                        "1. Отвечай кратко и по делу (1-3 предложения).\n"
+                        "2. Если договорились об изменениях, в конце добавь [UPDATE_PLAN].\n"
+                        "3. Используй HTML."
                     )
 
                     if len(history_for_api) > 15:
                         history_for_api = history_for_api[-15:]
                     
                     ai_raw = await generate_response(system_prompt, history_for_api)
-                    
-                    # Логируем ответ для отладки
                     log.info("ai_response_text", raw_text=ai_raw)
 
                     should_update_full_plan = "[UPDATE_PLAN]" in ai_raw
                     final_reply = ai_raw.replace("[UPDATE_PLAN]", "").strip()
                     clean_text = clean_html_for_telegram(final_reply)
 
-                    new_history = user.coach_history or []
-                    new_history.append({'role': 'assistant', 'content': clean_text})
+                    # 1. Сначала отправляем обычный текстовый ответ ИИ (если он не пустой)
+                    if clean_text:
+                        await send_to_queue("q_notifications", {"user_id": user_id, "text": clean_text})
+                        
+                        # Сохраняем этот ответ в историю
+                        new_history = list(user.coach_history) if user.coach_history else []
+                        new_history.append({'role': 'assistant', 'content': clean_text})
+                        user.coach_history = new_history
+                        flag_modified(user, "coach_history")
 
-                    # ... внутри elif mode == 'chat' ...
+                    # 2. Если есть тег обновления, генерируем и отправляем план вторым сообщением
                     if should_update_full_plan and survey:
                         log.info("triggering_full_plan_rebuild")
                         
-                        # Формируем специальную системную команду для "тихого" запроса
-                        # Мы просим только план, без лишних слов "Вот ваш план..."
                         update_instruction = {
                             "role": "user", 
-                            "content": "[SYSTEM COMMAND] На основе нашего диалога составь ПОЛНУЮ обновленную версию плана. "
-                                    "Используй HTML (<b>, <i>, <ul>, <li>). Таблицы <table> ЗАПРЕЩЕНЫ. "
-                                    "Выдай ТОЛЬКО текст плана."
+                            "content": "[SYSTEM COMMAND] На основе диалога составь ПОЛНУЮ обновленную версию плана. "
+                                       "Выдай ТОЛЬКО текст плана в HTML. Без вступлений."
                         }
                         
-                        # Отправляем всю историю + эту жесткую команду
                         history_for_update = history_for_api + [update_instruction]
-                        
                         new_plan_raw = await generate_response(system_prompt, history_for_update)
                         new_plan_clean = clean_html_for_telegram(new_plan_raw)
 
-                        # ОБЕРТКА (Для обновленного плана)
-                        formatted_new_plan = f"<blockquote expandable>{clean_text}</blockquote>"
+                        # Оборачиваем НОВЫЙ текст в цитату
+                        formatted_new_plan = f"<blockquote expandable>{new_plan_clean}</blockquote>"
 
                         survey.current_plan = formatted_new_plan
-                        # ...
+                        
+                        # Отправляем в Телеграм
                         await send_to_queue("q_notifications", {
                             "user_id": user_id,
                             "text": f"🪄 <b>Я внес изменения в твой план:</b>\n\n{formatted_new_plan}"
                         })
 
-                    user.coach_history = new_history
-                    flag_modified(user, "coach_history")
                     await session.commit()
-                    
-                    # Не отправляем пустое сообщение
-                    if clean_text:
-                        await send_to_queue("q_notifications", {"user_id": user_id, "text": clean_text})
-                    else:
-                        log.warning("empty_ai_response_skipped")
 
                 # --- СЦЕНАРИЙ 3: НАТАЛЬНАЯ КАРТА ---
                 elif mode == 'natal':
@@ -215,6 +207,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                     })
 
                 # --- СЦЕНАРИЙ 4: ТРЕКИНГ ---
+                # --- СЦЕНАРИЙ 4: ТРЕКИНГ ---
                 elif mode == 'tracking_trigger':
                     user = await session.get(User, user_id)
                     if not user: return
@@ -224,7 +217,9 @@ async def process_task(message: aio_pika.IncomingMessage):
                     )
                     current_plan = survey.current_plan if survey else ""
                     answers = survey.answers if survey else {}
-                    history_for_api = user.coach_history or []
+                    
+                    # Берем актуальную историю
+                    history_for_api = list(user.coach_history) if user.coach_history else []
 
                     system_prompt_template = await _get_prompt("coach")
                     system_prompt = (
@@ -232,22 +227,24 @@ async def process_task(message: aio_pika.IncomingMessage):
                         f"Данные клиента: {json.dumps(answers, ensure_ascii=False)}.\n"
                         f"Текущий план: {current_plan}"
                     )
-                    history_for_api.append({
-                        "role": "user",
-                        "content": "[SYSTEM COMMAND] Коротко и заботливо спроси меня, как прошел мой день в контексте нашей цели. Используй эмодзи."
-                    })
                     
-                    ai_raw = await generate_response(system_prompt, history_for_api)
+                    # Добавляем временную инструкцию для генерации (не сохраняем её в БД!)
+                    temp_history = history_for_api + [{
+                        "role": "user",
+                        "content": "[SYSTEM COMMAND] Инициируй ежедневный трекинг. Коротко и заботливо спроси, как прошел мой день в контексте цели. Используй эмодзи. Максимум 2 предложения."
+                    }]
+                    
+                    ai_raw = await generate_response(system_prompt, temp_history)
                     clean_text = clean_html_for_telegram(ai_raw)
                     
-                    new_history = list(user.coach_history) if user.coach_history else []
-                    new_history.append({'role': 'assistant', 'content': clean_text})
-                    user.coach_history = new_history
-
-                    flag_modified(user, "coach_history") # <--- И ЗДЕСЬ ТОЖЕ
-                    await session.commit()
-
                     if clean_text:
+                        # СОХРАНЯЕМ В ИСТОРИЮ (теперь это начало нового витка диалога)
+                        history_for_api.append({'role': 'assistant', 'content': clean_text})
+                        user.coach_history = history_for_api
+                        flag_modified(user, "coach_history")
+                        await session.commit()
+
+                        # Отправляем пользователю
                         await send_to_queue("q_notifications", {
                             "user_id": user_id,
                             "text": f"🔔 <b>Контроль прогресса</b>\n\n{clean_text}"
