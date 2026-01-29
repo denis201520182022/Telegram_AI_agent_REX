@@ -88,7 +88,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                         "Это твое первое сообщение пользователю в этом режиме."
                     )
 
-                    ai_raw = await generate_response(system_text, user_instruction)
+                    ai_raw = await generate_response(system_text, [{"role": "user", "content": user_instruction}]) # <---  ИЗМЕНЕНИЕ ЗДЕСЬ
                     clean_text = clean_html_for_telegram(ai_raw)
 
                     # Обновляем анкету
