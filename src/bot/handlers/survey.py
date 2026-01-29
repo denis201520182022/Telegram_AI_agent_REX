@@ -12,6 +12,7 @@ from src.utils.admin import is_admin
 from src.bot.keyboards.menu import get_main_menu
 from src.database.session import async_session_maker
 from src.database.models import User
+from src.utils.logger import logger
 
 # Импорты проекта
 from src.database.session import async_session_maker
