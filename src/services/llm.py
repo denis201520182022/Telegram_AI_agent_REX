@@ -37,7 +37,7 @@ client = AsyncOpenAI(
     http_client=http_client
 )
 
-async def generate_response(system_prompt: str, history: List[Dict[str, str]]) -> str:
+async def generate_response(system_prompt: str, history: list[dict[str, str]]) -> str:
     """
     Генерация ответа через Groq (Llama-3.3).
     Принимает системный промпт и историю сообщений.
