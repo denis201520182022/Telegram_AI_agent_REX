@@ -83,7 +83,7 @@ async def check_tracking_times():
                     })
 
                     # Принудительно ставим состояние chatting в Redis
-                    state_key = f"fsm:{bot_id}:{user.user_id}:{user.user_id}:state"
+                    state_key = f"fsm:{user.user_id}:{user.user_id}:state"
                     await redis_service.client.set(state_key, CoachState.chatting.state)
                     
                     # Лочим отправку на этот день
