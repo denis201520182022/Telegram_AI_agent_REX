@@ -14,6 +14,7 @@ from src.services.llm import generate_response
 from src.database.session import async_session_maker
 from src.database.models import UserSurvey, User
 from src.services.redis import redis_service 
+from src.bot.keyboards.coach import get_coach_menu
 from src.services.rabbit import send_to_queue
 
 # OBSERVABILITY
@@ -102,10 +103,8 @@ async def process_task(message: aio_pika.IncomingMessage):
                     )
 
                     user_instruction = (
-                        "[SYSTEM COMMAND] Сгенерируй полный план на основе анкеты. "
-                        "Используй только <b>, <i>, <ul>, <li>. Для выделения цифр или кода используй тег <code>."
-                        "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать <table>. "
-                        "Сделай план максимально подробным."
+                        "[SYSTEM COMMAND] Внимание! Сейчас сгенерируй полный план на основе анкеты.!!!! "
+                        
                     )
                     ai_raw = await generate_response(system_text, [{"role": "user", "content": user_instruction}])
                     clean_text = clean_html_for_telegram(ai_raw)
@@ -131,7 +130,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                     # Отправляем ЮЗЕРУ именно форматированный план
                     await send_to_queue("q_notifications", {
                         "user_id": user_id,
-                        "text": f"✅ <b>Ваш персональный план готов!</b>\n\n{formatted_plan}\n\n<i>Теперь я всегда на связи.</i>"
+                        "text": f"✅ <b>Ваш персональный план готов!</b>\n\n{formatted_plan}\n\n<i>Теперь я всегда на связи. Вы можете написать мне в любой момент и мы скорректируем ваш план. А также, если у вас есть вопросы, я с радостью вам отвечу🙂</i>"
                     })
 
                 # --- СЦЕНАРИЙ 2: ЧАТ (Свободное общение) ---
@@ -265,7 +264,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                     # Добавляем временную инструкцию для генерации (не сохраняем её в БД!)
                     temp_history = history_for_api + [{
                         "role": "user",
-                        "content": "[SYSTEM COMMAND] Инициируй ежедневный трекинг. Коротко и заботливо спроси, как прошел мой день в контексте цели. Используй эмодзи. Максимум 2 предложения."
+                        "content": "[SYSTEM COMMAND] Инициируй ежедневный трекинг. Коротко и заботливо спроси, как прошел мой день (или проходит, в зависимости от времени суток сейчас по Московскому времени) в контексте цели. Используй эмодзи. Максимум 2 предложения."
                     }]
                     
                     ai_raw = await generate_response(system_prompt, temp_history)
@@ -281,7 +280,8 @@ async def process_task(message: aio_pika.IncomingMessage):
                         # Отправляем пользователю
                         await send_to_queue("q_notifications", {
                             "user_id": user_id,
-                            "text": f"🔔 <b>Контроль прогресса</b>\n\n{clean_text}"
+                            "text": f"🔔 <b>Контроль прогресса</b>\n\n{clean_text}",
+                            "keyboard": get_coach_menu().model_dump()
                         })
 
             AI_TASK_PROCESSED.labels(mode=mode, status="success").inc()

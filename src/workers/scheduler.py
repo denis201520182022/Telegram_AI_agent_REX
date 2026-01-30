@@ -14,6 +14,7 @@ from src.config import settings
 from src.database.models import User, UserSurvey
 from src.database.session import async_session_maker
 from src.services.rabbit import send_to_queue
+from src.bot.keyboards.coach import get_coach_menu
 from src.scripts.update_surveys import update_surveys
 from src.services.matching import run_daily_matching
 from src.services.redis import redis_service
@@ -138,7 +139,7 @@ async def main():
     scheduler = AsyncIOScheduler(timezone="UTC")
     
     # Задачи планировщика
-    scheduler.add_job(safe_job_run, 'interval', minutes=30, args=[update_surveys, 'update_surveys'])
+    scheduler.add_job(safe_job_run, 'interval', minutes=3, args=[update_surveys, 'update_surveys'])
     scheduler.add_job(safe_job_run, 'cron', hour=12, minute=0, args=[run_daily_matching, 'dating'])
     scheduler.add_job(safe_job_run, 'cron', hour=8, minute=0, args=[update_daily_horoscopes, 'horoscopes'])
     scheduler.add_job(safe_job_run, 'cron', minute=0, args=[check_tracking_times, 'tracking_hourly'])
