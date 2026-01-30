@@ -144,6 +144,8 @@ async def main():
     scheduler.add_job(safe_job_run, 'cron', hour=12, minute=0, args=[run_daily_matching, 'dating'])
     scheduler.add_job(safe_job_run, 'cron', hour=8, minute=0, args=[update_daily_horoscopes, 'horoscopes'])
     scheduler.add_job(safe_job_run, 'cron', minute=0, args=[check_tracking_times, 'tracking_hourly'])
+    # Для теста можно поставить проверку раз в минуту
+    scheduler.add_job(safe_job_run, 'interval', minutes=1, args=[check_tracking_times, 'tracking_test'])
 
     scheduler.start()
     
