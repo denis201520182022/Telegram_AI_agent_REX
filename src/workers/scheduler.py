@@ -48,7 +48,8 @@ async def check_tracking_times():
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     
     # Не забудь вытащить bot_id для ключа FSM
-    bot_id = settings.BOT_TOKEN.get_secret_value().split(':')[1]
+    bot_id = settings.BOT_TOKEN.get_secret_value().split(':')[0]
+
 
     async with async_session_maker() as session:
         # ЗАМЕНИТЕ ВАШУ СТРОКУ С (...) НА ЭТУ:
