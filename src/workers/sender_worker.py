@@ -4,6 +4,7 @@ import sys
 import aio_pika
 from os.path import abspath, dirname
 from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
 # Магия путей
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
@@ -32,7 +33,15 @@ async def process_notification(message: aio_pika.IncomingMessage, bot: Bot):
             
             # Десериализуем клавиатуру из JSON обратно в объект aiogram
             keyboard_data = data.get('keyboard')
-            keyboard = InlineKeyboardMarkup.model_validate(keyboard_data) if keyboard_data else None
+            keyboard = None
+
+            if keyboard_data:
+                # Проверяем, что внутри: если есть ключ 'inline_keyboard' — это инлайн кнопки
+                if "inline_keyboard" in keyboard_data:
+                    keyboard = InlineKeyboardMarkup.model_validate(keyboard_data)
+                # Если есть ключ 'keyboard' — это обычное меню (Reply)
+                elif "keyboard" in keyboard_data:
+                    keyboard = ReplyKeyboardMarkup.model_validate(keyboard_data)
 
             log = logger.bind(user_id=user_id, worker="sender")
             log.info("sending_message_attempt")
