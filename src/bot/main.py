@@ -36,7 +36,7 @@ from src.bot.middlewares.check_sub import CheckSubscriptionMiddleware
 from src.bot.keyboards.menu import get_main_menu
 
 # Это строка, которая будет зашита в ваш единый QR-код: t.me/RexBot?start=REX_COMPANY_PROMO_2024
-GLOBAL_QR_HASH = "WAkFUSbalog"
+GLOBAL_QR_HASH = "Hs5-6Ntybfs"
 
 async def start_handler(message: Message, command: CommandObject):
     """
