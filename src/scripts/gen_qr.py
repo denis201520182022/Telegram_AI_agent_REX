@@ -18,7 +18,7 @@ from src.database.models import QRCode
 # Настройки
 BATCH_ID = "BATCH_001_TEST" # Номер партии
 COUNT = 100                 # Сколько кодов генерируем (для теста хватит 100, потом поставишь 1_000_000)
-BOT_USERNAME = "Rex_te7st_bot" # Твой юзернейм бота (без @)
+BOT_USERNAME = "8533842497:AAGCJnnTzusZF2iPHxoKcJD1z2txx0UUHHg" # Твой юзернейм бота (без @)
 
 async def generate_codes():
     print(f"🚀 Начинаю генерацию {COUNT} QR-кодов для партии {BATCH_ID}...")
