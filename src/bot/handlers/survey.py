@@ -8,7 +8,7 @@ from sqlalchemy import update
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from sqlalchemy import select, desc
-
+import html
 from src.utils.admin import is_admin
 from src.bot.keyboards.menu import get_main_menu
 from src.database.session import async_session_maker
@@ -292,7 +292,6 @@ async def process_skip_photo(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     # Сохраняем None, значит фото нет
     await _save_answer_and_next(callback.message, state, None)
-
 @router.message(SurveyState.in_progress)
 async def process_text_answer(message: Message, state: FSMContext):
     # Удаляем сообщение пользователя для чистоты чата
@@ -302,15 +301,23 @@ async def process_text_answer(message: Message, state: FSMContext):
     if not text:
         return # Игнорим картинки и прочее
         
-    # Валидация int
     data = await state.get_data()
-    q = data['questions'][data['current_step']]
+    questions = data.get('questions', [])
+    current_step = data.get('current_step', 0)
+
+    # === ДОБАВЛЯЕМ ПРЕДОХРАНИТЕЛЬ ===
+    # Если шаг уже равен или больше кол-ва вопросов, значит опрос закончен, 
+    # и мы просто застряли в этом состоянии из-за ошибки.
+    if current_step >= len(questions):
+        log.warning("survey_already_finished_but_state_stuck", user_id=message.from_user.id)
+        return await _finish_questions(message, state)
+    # ================================
+
+    q = questions[current_step]
     
     if q['type'] == 'int':
         if not text.isdigit():
-            # Показываем ошибку во всплывашке, но не двигаемся дальше
             temp_msg = await message.answer("🔢 Пожалуйста, введите число.")
-            # Удалим через 3 сек
             import asyncio
             await asyncio.sleep(2)
             await safe_delete(message.bot, message.chat.id, temp_msg.message_id)
@@ -358,7 +365,6 @@ async def _save_answer_and_next(message: Message, state: FSMContext, answer):
 # --- 4. ФИНАЛ АНКЕТЫ И ПОДТВЕРЖДЕНИЕ ---
 
 # src/bot/handlers/survey.py
-
 async def _finish_questions(message: Message, state: FSMContext):
     data = await state.get_data()
     answers = data['answers']
@@ -386,9 +392,16 @@ async def _finish_questions(message: Message, state: FSMContext):
                           "07":"Июль","08":"Август","09":"Сентябрь","10":"Октябрь","11":"Ноябрь","12":"Декабрь"}
             val = inv_months.get(val, val)
 
-        summary += f"▫️ {short_q}: <b>{val}</b>\n"
+        # === ИСПРАВЛЕНИЕ ТУТ ===
+        # Экранируем вопрос и ответ, чтобы символы < > не ломали разметку
+        # str(val) нужен, так как ответ может быть числом
+        safe_q = html.escape(short_q)
+        safe_val = html.escape(str(val)) 
+
+        summary += f"▫️ {safe_q}: <b>{safe_val}</b>\n"
+        # =======================
         
-    summary += "\nПроверьте"
+    summary += "\nПроверьте, всё ли верно?"
     
     msg_id = data.get('msg_to_edit')
     if msg_id:
@@ -400,7 +413,8 @@ async def _finish_questions(message: Message, state: FSMContext):
                 reply_markup=get_confirm_kb(),
                 parse_mode="HTML"
             )
-        except:
+        except Exception as e:
+            # Если редактирование не удалось (например, сообщение слишком старое), шлем новое
             await message.answer(summary, reply_markup=get_confirm_kb())
     else:
         await message.answer(summary, reply_markup=get_confirm_kb())

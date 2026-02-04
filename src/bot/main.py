@@ -35,6 +35,8 @@ from src.bot.handlers import coach as coach_router
 from src.bot.middlewares.check_sub import CheckSubscriptionMiddleware
 from src.bot.keyboards.menu import get_main_menu
 
+# Это строка, которая будет зашита в ваш единый QR-код: t.me/RexBot?start=REX_COMPANY_PROMO_2024
+GLOBAL_QR_HASH = "WAkFUSbalog"
 
 async def start_handler(message: Message, command: CommandObject):
     """
@@ -66,36 +68,45 @@ async def start_handler(message: Message, command: CommandObject):
         # --- 2. ЛОГИКА АКТИВАЦИИ QR-КОДА ---
         if args:
             qr_hash = args
-            q_stmt = select(QRCode).where(QRCode.code_hash == qr_hash)
-            q_res = await session.execute(q_stmt)
-            qr = q_res.scalar_one_or_none()
-
-            if not qr:
-                log.warning("invalid_qr_attempt", code_hash=qr_hash)
-                await message.answer("❌ <b>Неверный QR-код.</b>\nПожалуйста, убедитесь, что ссылка корректна.")
-                return
-
-            if not qr.is_active:
-                await message.answer("❌ Этот код деактивирован.")
-                return
-
-            if qr.activated_at:
-                if qr.activated_by_id == user_id:
-                    await message.answer("ℹ️ Вы уже активировали этот код ранее.")
-                else:
-                    await message.answer("❌ Этот код уже использован другим пользователем.")
-                
-                # Показываем меню, если есть доступ
-                now = datetime.datetime.now(datetime.timezone.utc)
-                if is_admin(user_id) or (user.subscription_expires_at and user.subscription_expires_at > now):
-                    kb = get_main_menu(natal_credits=user.natal_chart_credits, is_admin=is_admin(user_id))
-                    await message.answer("🏠 Главное меню:", reply_markup=kb)
-                return
-            
-            # Активация
             now = datetime.datetime.now(datetime.timezone.utc)
-            qr.activated_at = now
-            qr.activated_by_id = user_id
+            
+            # Переменная для хранения объекта QR (если он найден в базе)
+            qr_obj = None
+
+            # А. Если это НЕ глобальный код — ищем и проверяем его в базе
+            if qr_hash != GLOBAL_QR_HASH:
+                q_stmt = select(QRCode).where(QRCode.code_hash == qr_hash)
+                q_res = await session.execute(q_stmt)
+                qr_obj = q_res.scalar_one_or_none()
+
+                # Проверки для обычных кодов
+                if not qr_obj:
+                    log.warning("invalid_qr_attempt", code_hash=qr_hash)
+                    await message.answer("❌ <b>Неверный QR-код.</b>\nПожалуйста, убедитесь, что ссылка корректна.")
+                    return
+
+                if not qr_obj.is_active:
+                    await message.answer("❌ Этот код деактивирован.")
+                    return
+
+                if qr_obj.activated_at:
+                    if qr_obj.activated_by_id == user_id:
+                        await message.answer("ℹ️ Вы уже активировали этот код ранее.")
+                    else:
+                        await message.answer("❌ Этот код уже использован другим пользователем.")
+                    
+                    # Показываем меню, если есть доступ
+                    if is_admin(user_id) or (user.subscription_expires_at and user.subscription_expires_at > now):
+                        kb = get_main_menu(natal_credits=user.natal_chart_credits, is_admin=is_admin(user_id))
+                        await message.answer("🏠 Главное меню:", reply_markup=kb)
+                    return
+            
+            # Б. Логика "Сжигания" кода (Только если это реальный код из базы)
+            if qr_obj:
+                qr_obj.activated_at = now
+                qr_obj.activated_by_id = user_id
+            
+            # В. Логика начисления бонусов (Одинаковая для ВСЕХ кодов)
             user.qr_activations_count += 1
             
             # Начисление бонусов (Натальная карта за каждые 5 кодов)
@@ -107,15 +118,16 @@ async def start_handler(message: Message, command: CommandObject):
                 left = 5 - (user.qr_activations_count % 5)
                 bonus_msg = f"\n\n<i>(Еще {left} активации до получения Натальной карты)</i>"
             
-            # Продление подписки (+5 дней за код)
+            # Продление подписки (+5 дней за ЛЮБОЙ код, включая глобальный)
             days_to_add = datetime.timedelta(days=5)
+            
             if user.subscription_expires_at and user.subscription_expires_at > now:
                 user.subscription_expires_at += days_to_add
             else:
                 user.subscription_expires_at = now + days_to_add
             
             await session.commit()
-            log.info("qr_activated_successfully", code_hash=qr_hash)
+            log.info("qr_activated_successfully", code_hash=qr_hash, is_global=(qr_hash == GLOBAL_QR_HASH))
             
             expires_str = user.subscription_expires_at.strftime("%d.%m.%Y")
             kb = get_main_menu(natal_credits=user.natal_chart_credits, is_admin=is_admin(user_id))
@@ -141,6 +153,7 @@ async def start_handler(message: Message, command: CommandObject):
                  "Чтобы начать пользоваться функциями коуча, отсканируй QR-код с упаковки REX."
              )
 
+             
 async def main():
     """Инициализация и запуск бота."""
     logger.info("service_started", service="bot_polling")
