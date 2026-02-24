@@ -1,6 +1,4 @@
 services:
-  # --- ИНФРАСТРУКТУРА ---
-  # Пулер соединений (Прослойка перед БД)
   # 1. База данных (Postgres)
   postgres_db:
     image: postgres:15-alpine
@@ -10,10 +8,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-rex_db}
-      # Это позволит pgbouncer подключаться без конфликта типов паролей
       POSTGRES_HOST_AUTH_METHOD: trust 
     ports:
-      - "5433:5432"
+      # ПРИВЯЗЫВАЕМ К LOCALHOST. Теперь ваш SSH-туннель будет работать, 
+      # но из интернета напрямую к базе никто не подключится.
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -29,9 +28,8 @@ services:
       - POOL_MODE=transaction
       - MAX_CLIENT_CONN=1000
       - DEFAULT_POOL_SIZE=20
-      - AUTH_TYPE=trust # Внутри защищенной сети докера ставим trust
-    ports:
-      - "6432:5432"
+      - AUTH_TYPE=trust 
+    # ports: <-- УДАЛЯЕМ (внешний доступ не нужен, бот общается внутри сети Docker)
     depends_on:
       - postgres_db
     restart: always
@@ -41,9 +39,7 @@ services:
     image: rabbitmq:3-management
     container_name: rex_rabbitmq
     restart: always
-    ports:
-      - "5672:5672"
-      - "15672:15672"
+    # ports: <-- УДАЛЯЕМ (внешний доступ не нужен, всё общение внутри Docker)
     volumes:
       - rabbit_data:/var/lib/rabbitmq
     environment:
@@ -54,14 +50,14 @@ services:
     image: redis:7-alpine
     container_name: rex_redis
     restart: always
-    ports:
-      - "6379:6379"
+    # Гарантируем, что он всегда Мастер и очищаем следы взлома
+    command: ["redis-server", "--appendonly", "yes", "--replicaof", "no", "one"]
+    # ports: <-- УДАЛЯЕМ (внешний доступ НЕ НУЖЕН СОВСЕМ)
     volumes:
       - redis_data:/data
 
   # --- ПРИЛОЖЕНИЕ (PYTHON) ---
-
-  # 4. Бот (Frontend)
+  # У всех воркеров и бота удаляем ports (у вас их и не было, это правильно)
   bot_polling:
     build: .
     container_name: rex_bot
@@ -74,7 +70,6 @@ services:
       - redis
       - rabbitmq
 
-  # 5. AI Worker (Обработка GPT)
   worker_ai:
     build: .
     container_name: rex_worker_ai
@@ -87,7 +82,6 @@ services:
       - redis
       - rabbitmq
 
-  # 6. Sender Worker (Отправка сообщений)
   worker_sender:
     build: .
     container_name: rex_worker_sender
@@ -98,7 +92,6 @@ services:
     depends_on:
       - rabbitmq
 
-  # 7. Scheduler (Планировщик)
   worker_scheduler:
     build: .
     container_name: rex_scheduler
@@ -110,24 +103,21 @@ services:
       - postgres_db
       - redis
       - rabbitmq
-  # --- МОНИТОРИНГ ---
 
-  # 8. Loki (База данных логов)
+  # --- МОНИТОРИНГ ---
   loki:
     image: grafana/loki:2.9.2
     container_name: rex_loki
-    
     command: -config.file=/etc/loki/local-config.yaml
     volumes:
       - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml
     restart: always
 
-  # 9. Promtail (Агент сбора логов)
   promtail:
     image: grafana/promtail:2.9.2
     container_name: rex_promtail
     volumes:
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro # Читает логи докера
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - ./monitoring/promtail-config.yaml:/etc/promtail/config.yaml
     command: -config.file=/etc/promtail/config.yaml
@@ -135,23 +125,19 @@ services:
     depends_on:
       - loki
 
-  # 10. Prometheus (Сбор метрик)
   prometheus:
     image: prom/prometheus:v2.45.0
     container_name: rex_prometheus
-    ports:
-      - "9090:9090"
+    # ports: <-- УДАЛЯЕМ (Grafana забирает метрики внутри сети Docker)
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
     restart: always
 
-  # 11. cAdvisor (Метрики контейнеров: CPU, RAM)
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.47.2
     container_name: rex_cadvisor
-    ports:
-      - "8080:8080"
+    # ports: <-- УДАЛЯЕМ (Prometheus забирает метрики внутри сети Docker)
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
@@ -159,25 +145,21 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
     restart: always
-    # Если ты на Windows, cadvisor может капризничать, но в WSL2 обычно работает.
-    # Если не запустится - не критично для старта, просто не будет графиков CPU.
 
-  # 12. Grafana (Дашборды)
+  # 12. Grafana (ЕДИНСТВЕННОЕ, ЧТО ОСТАЕТСЯ ОТКРЫТЫМ)
   grafana:
     image: grafana/grafana:10.1.0
     container_name: rex_grafana
     ports:
       - "4000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin # Пароль для входа (логин admin)
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin} 
     volumes:
       - grafana_data:/var/lib/grafana
     restart: always
     depends_on:
       - prometheus
       - loki
-
-
 
 volumes:
   postgres_data:
