@@ -51,7 +51,7 @@ services:
     container_name: rex_redis
     restart: always
     # Гарантируем, что он всегда Мастер и очищаем следы взлома
-    command: ["redis-server", "--appendonly", "yes", "--replicaof", "no", "one"]
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--replicaof", "no", "one"]
     # ports: <-- УДАЛЯЕМ (внешний доступ НЕ НУЖЕН СОВСЕМ)
     volumes:
       - redis_data:/data
