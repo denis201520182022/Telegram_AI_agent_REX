@@ -17,7 +17,7 @@ def get_main_menu(natal_credits: int = 0, is_admin: bool = False) -> ReplyKeyboa
     ]
     
     # Ряд 3: Натальная карта (показываем, если есть попытки или это админ)
-    # row3 = []
+    row3 = []
     # if natal_credits > 0 or is_admin:
     #     label = "🌟 Натальная карта"
     #     if not is_admin:
