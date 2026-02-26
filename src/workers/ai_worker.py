@@ -234,10 +234,10 @@ async def process_task(message: aio_pika.IncomingMessage):
                     # 2. Теперь собираем финальный системный промпт
                     system_prompt = (
                         f"{system_prompt_template}\n\n" 
-                        f"ДАННЫЕ КЛИЕНТА: {json.dumps(survey.answers if survey else {}, ensure_ascii=False)}.\n"
-                        f"ТЕКУЩИЙ ПЛАН: {current_plan_in_db}"
+                        f"ДАННЫЕ КЛИЕНТА: {json.dumps(answers, ensure_ascii=False)}.\n"
+                        f"ТЕКУЩИЙ ПЛАН: {current_plan}" # Используем переменную current_plan, созданную выше
                     )
-                    
+ 
                     # Добавляем временную инструкцию для генерации (не сохраняем её в БД!)
                     temp_history = history_for_api + [{
                         "role": "user",
