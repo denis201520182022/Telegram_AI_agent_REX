@@ -60,7 +60,7 @@ async def get_current_plan_btn(message: Message, state: FSMContext):
     })
 
 
-@router.message(CoachState.chatting, F.text == "⚙️ Настройки режима")
+@router.message(CoachState.chatting, F.text == "⚙️ Настройки")
 async def coach_settings(message: Message):
     """Меню настроек: трекинг и смена формата."""
     async with async_session_maker() as session:
@@ -74,7 +74,7 @@ async def coach_settings(message: Message):
         parse_mode="HTML"
     )
 
-@router.message(CoachState.chatting, F.text == "🔙 Выйти в главное меню")
+@router.message(CoachState.chatting, F.text == "🏠 Выйти")
 async def exit_coach_mode(message: Message, state: FSMContext):
     """Выход в главное меню с проверкой прав админа и кредитов."""
     user_id = message.from_user.id

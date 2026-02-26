@@ -137,7 +137,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                     # Собираем контекст для ИИ
                     current_plan_in_db = survey.current_plan if survey else "План еще не создан."
                     system_prompt = (
-                        f"{await _get_prompt(f'coach_{user.coach_mode or 'combined'}')}\n\n"
+                        f"{await _get_prompt(f'coach_{user.coach_mode or "combined"}')}\n\n"
                         f"ДАННЫЕ КЛИЕНТА: {json.dumps(survey.answers if survey else {}, ensure_ascii=False)}.\n"
                         f"ТЕКУЩИЙ ПЛАН: {current_plan_in_db}"
                     )
