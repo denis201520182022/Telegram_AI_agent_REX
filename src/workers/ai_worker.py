@@ -134,10 +134,16 @@ async def process_task(message: aio_pika.IncomingMessage):
                         .order_by(desc(UserSurvey.created_at))
                     )
                     
-                    # Собираем контекст для ИИ
+                    # --- ИСПРАВЛЕННЫЙ БЛОК: СНАЧАЛА ПОЛУЧАЕМ ПЕРЕМЕННЫЕ ---
                     current_plan_in_db = survey.current_plan if survey else "План еще не создан."
+                    
+                    # Получаем ключ промпта без вложенных f-строк
+                    current_mode = user.coach_mode or "combined"
+                    prompt_key = f"coach_{current_mode}"
+                    system_prompt_template = await _get_prompt(prompt_key)
+
                     system_prompt = (
-                        f"{await _get_prompt(f'coach_{user.coach_mode or "combined"}')}\n\n"
+                        f"{system_prompt_template}\n\n"
                         f"ДАННЫЕ КЛИЕНТА: {json.dumps(survey.answers if survey else {}, ensure_ascii=False)}.\n"
                         f"ТЕКУЩИЙ ПЛАН: {current_plan_in_db}"
                     )
