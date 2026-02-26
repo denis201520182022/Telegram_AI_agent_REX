@@ -8,7 +8,7 @@ from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
 # Магия путей
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
-
+from src.utils.text import clean_html_for_telegram
 from src.config import settings
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
@@ -28,7 +28,11 @@ async def process_notification(message: aio_pika.IncomingMessage, bot: Bot):
         try:
             data = json.loads(message.body)
             user_id = data['user_id']
-            text = data.get('text', '')
+            raw_text = data.get('text', '') # Берем текст из очереди
+            
+            # ФИНАЛЬНАЯ ОЧИСТКА ПЕРЕД ТЕЛЕГРАМОМ
+            # Это спасет бота от падения, если ИИ протащил <ul> или другие теги
+            text = clean_html_for_telegram(raw_text)
             photo = data.get('photo')
             
             # Десериализуем клавиатуру из JSON обратно в объект aiogram

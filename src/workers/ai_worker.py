@@ -93,12 +93,14 @@ async def process_task(message: aio_pika.IncomingMessage):
                         "[SYSTEM COMMAND] Внимание! Сейчас сгенерируй полный план на основе анкеты.!!!! "
                         
                     )
+                    
                     ai_raw = await generate_response(system_text, [{"role": "user", "content": user_instruction}])
+
+                    # 1. Сначала чистим ответ ИИ от мусора (ul, li, md)
                     clean_text = clean_html_for_telegram(ai_raw)
                     if len(clean_text) > 3800:
                         clean_text = clean_text[:3800] + "..."
-
-                    # ОБЕРТКА ПЛАНА
+                    # 2. Только ПОТОМ оборачиваем в раскрывающуюся цитату
                     formatted_plan = f"<blockquote expandable>{clean_text}</blockquote>"
 
                     await session.execute(
