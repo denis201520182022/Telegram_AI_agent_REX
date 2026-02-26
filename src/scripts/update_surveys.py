@@ -1,3 +1,4 @@
+# src/scripts/update_surveys.py
 import asyncio
 import sys
 from collections import defaultdict
@@ -14,54 +15,31 @@ async def update_surveys():
     log.info("started")
     
     try:
-        questions, prompts = await fetch_all_data()
+        # 1. Загружаем чистые данные из Google Таблиц
+        questions, prompts import fetch_all_data()
         
-        grouped_questions = defaultdict(list)
+        # 2. Группируем вопросы СТРОГО по колонке category из таблицы
+        # Если в таблице написано 'coach' — кладем в 'coach', если 'workout' — в 'workout'
         raw_categories = defaultdict(list)
-        
-        # 1. Раскладываем вопросы по "сырым" категориям из таблицы
         for q in questions:
-            cat = q.get('category', 'common')
+            cat = q.get('category', 'common').strip().lower()
             raw_categories[cat].append(q)
             
-        # 2. Формируем конфиги для режимов бота
-        
-        # COACH
-        grouped_questions['coach'] = (
-            raw_categories['common'] + 
-            raw_categories['nutrition'] + 
-            raw_categories['workout']
-        )
-        
-        # DATING
-        grouped_questions['dating'] = (
-            raw_categories['common'] + 
-            raw_categories['dating']
-        )
-        
-        # HOROSCOPE (Простой прогноз)
-        grouped_questions['horoscope'] = (
-            # common не нужен, только дата
-            raw_categories['horoscope'] 
-        )
-        
-        # NATAL (Натальная карта)
-        grouped_questions['natal'] = (
-            raw_categories['common'] + 
-            raw_categories['natal']
-        )
+        # 3. Сохраняем каждую категорию в Redis отдельно
+        # Теперь в Redis будут ключи: survey_config:coach, survey_config:workout, и т.д.
+        for cat_name, q_list in raw_categories.items():
+            await redis_service.set_survey_config(cat_name, q_list)
+            log.info("config_saved", category=cat_name, count=len(q_list))
 
-        # 3. Сохраняем в Redis
-        for mode, q_list in grouped_questions.items():
-            if q_list:
-                await redis_service.set_survey_config(mode, q_list)
-                log.info("config_saved", mode=mode, questions_count=len(q_list))
-
+        # 4. Сохраняем промпты
         if prompts:
             for mode, text in prompts.items():
                 await redis_service.set_prompt(mode, text)
             log.info("prompts_saved", keys=list(prompts.keys()))
             
+        log.info("sync_finished_successfully")
+        return True
+
     except Exception as e:
         log.error("failed", error=str(e))
         raise e
