@@ -221,14 +221,15 @@ async def process_task(message: aio_pika.IncomingMessage):
                     # Берем актуальную историю
                     history_for_api = list(user.coach_history) if user.coach_history else []
 
-                    sub_mode = user.coach_mode or "combined" 
+                    sub_mode = user.coach_mode or "combined"
                     prompt_key = f"coach_{sub_mode}"
                     system_prompt_template = await _get_prompt(prompt_key)
 
+                    # 2. Теперь собираем финальный системный промпт
                     system_prompt = (
-                        f"{system_prompt_template}\n"
-                        f"Данные клиента: {json.dumps(answers, ensure_ascii=False)}.\n"
-                        f"Текущий план: {current_plan}"
+                        f"{system_prompt_template}\n\n" 
+                        f"ДАННЫЕ КЛИЕНТА: {json.dumps(survey.answers if survey else {}, ensure_ascii=False)}.\n"
+                        f"ТЕКУЩИЙ ПЛАН: {current_plan_in_db}"
                     )
                     
                     # Добавляем временную инструкцию для генерации (не сохраняем её в БД!)
