@@ -20,7 +20,7 @@ from src.config import settings
 from src.database.session import async_session_maker
 from src.database.models import User, QRCode
 from src.services.redis import redis_client
-
+from src.bot.middlewares.activity import ActivityMiddleware
 # --- OBSERVABILITY ---
 from src.utils.logger import logger
 from src.utils.metrics import start_metrics_server, USER_UPDATES
@@ -170,6 +170,7 @@ async def main():
     dp = Dispatcher(storage=storage)
 
     # Middlewares
+    dp.update.outer_middleware(ActivityMiddleware()) 
     dp.message.middleware(CheckSubscriptionMiddleware())
     dp.callback_query.middleware(CheckSubscriptionMiddleware())
 
