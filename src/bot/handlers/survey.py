@@ -97,11 +97,12 @@ async def start_coach_survey(message: Message, state: FSMContext):
 
 @router.callback_query(SurveyState.choosing_mode, F.data.startswith("mode_"))
 async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
-    selected_sub_mode = callback.data.split("_")[1] # workout, nutrition, combined
+    # Извлекаем выбранный под-режим (workout / nutrition / combined)
+    selected_sub_mode = callback.data.split("_")[1]
     user_id = callback.from_user.id
     
-    # 1. ОПРЕДЕЛЯЕМ, КАКИЕ КАТЕГОРИИ НАМ НУЖНЫ
-    # Базовые вопросы 'coach' нужны всегда
+    # 1. ОПРЕДЕЛЯЕМ КАТЕГОРИИ
+    # ВАЖНО: Категория 'coach' должна быть в таблице именно под этим именем!
     target_categories = ["coach"] 
     
     if selected_sub_mode == "workout":
@@ -111,23 +112,27 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
     elif selected_sub_mode == "combined":
         target_categories.extend(["workout", "nutrition"])
 
-    # 2. ЗАГРУЖАЕМ ВСЕ ВОПРОСЫ ДЛЯ ЭТИХ КАТЕГОРИЙ
+    # 2. ЗАГРУЖАЕМ ВОПРОСЫ ИЗ REDIS
     all_required_questions = []
     for cat in target_categories:
         questions = await redis_service.get_survey_config(cat)
         if questions:
             all_required_questions.extend(questions)
+        else:
+            logger.error(f"Survey Error: Category '{cat}' returned 0 questions from Redis!")
 
     if not all_required_questions:
-        await callback.answer("Ошибка: вопросы не найдены в базе!", show_alert=True)
+        await callback.answer("Ошибка: вопросы не найдены!", show_alert=True)
         return
 
-    # 3. ПОЛУЧАЕМ СУЩЕСТВУЮЩИЕ ОТВЕТЫ (если это адаптация или возврат)
+    # 3. ПОЛУЧАЕМ ТЕКУЩИЕ ОТВЕТЫ (для фильтрации)
     data = await state.get_data()
     is_adaptation = data.get('is_adaptation', False)
     
-    # Если мы в режиме адаптации, достаем ответы из БД (если их еще нет в state)
+    # Если это "Заполнить заново", answers должны быть пустыми
     current_answers = data.get('answers', {})
+    
+    # Если адаптация — подтягиваем ответы из ПОСЛЕДНЕЙ анкеты коуча
     if is_adaptation and not current_answers:
         async with async_session_maker() as session:
             survey = await session.scalar(
@@ -138,28 +143,24 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
             if survey and survey.answers:
                 current_answers = dict(survey.answers)
 
-    # 4. ФИЛЬТРАЦИЯ: Оставляем только те вопросы, на которые НЕТ ответов
-    # Это ключевой момент: 
-    # - Если анкета новая, current_answers пустой -> зададутся ВСЕ вопросы.
-    # - Если адаптация -> зададутся только НОВЫЕ для этого режима вопросы.
-    final_questions_to_ask = []
+    # 4. ФИЛЬТРАЦИЯ (Оставляем только то, на что нет ответов)
+    final_questions = []
     for q in all_required_questions:
         if q['key'] not in current_answers:
-            final_questions_to_ask.append(q)
+            final_questions.append(q)
 
-    # 5. ПРОВЕРКА: Если дозадавать ничего не нужно
-    # (Например, перешли из 'combined' в 'workout' — все ответы уже есть)
-    if not final_questions_to_ask:
-        await callback.message.edit_text(
-            "✅ <b>Все нужные данные уже есть. Обновляю ваш план...</b>", 
-            parse_mode="HTML"
-        )
+    # Отладочный лог в консоль — проверь его!
+    print(f"DEBUG: Mode: {selected_sub_mode}, Total: {len(all_required_questions)}, To Ask: {len(final_questions)}")
+
+    # 5. ПРОВЕРКА НА ПУСТОТУ
+    if not final_questions:
+        await callback.message.edit_text("✅ Данные актуальны. Обновляю план...")
         return await finish_setup_for_adaptation(callback, state, selected_sub_mode, current_answers)
 
-    # 6. ЗАПУСК ОПРОСА
+    # 6. ЗАПУСК
     await state.update_data(
-        survey_mode=selected_sub_mode, # Сохраняем под-режим (workout/nutrition/combined)
-        questions=final_questions_to_ask,
+        survey_mode=selected_sub_mode, 
+        questions=final_questions,
         current_step=0, 
         answers=current_answers,
         msg_to_edit=callback.message.message_id
@@ -169,7 +170,7 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
     await _ask_question(callback.message, state)
     await callback.answer()
 
-    
+
 # --- ВАЖНО: Добавьте новую вспомогательную функцию в конец файла ---
 # Она нужна для случая, когда дозадавать вопросы не нужно
 async def finish_setup_for_adaptation(callback: CallbackQuery, state: FSMContext, new_sub_mode: str, answers: dict):
