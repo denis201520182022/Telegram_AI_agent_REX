@@ -12,17 +12,17 @@ def get_main_menu(natal_credits: int = 0, is_admin: bool = False) -> ReplyKeyboa
     
     # Ряд 2: Доп. сервисы
     row2 = [
-        KeyboardButton(text="❤️ Найти партнера"),
-        KeyboardButton(text="🔮 Астро-прогноз")
+        #KeyboardButton(text="❤️ Найти партнера"),
+        #KeyboardButton(text="🔮 Астро-прогноз")
     ]
     
     # Ряд 3: Натальная карта (показываем, если есть попытки или это админ)
-    row3 = []
-    if natal_credits > 0 or is_admin:
-        label = "🌟 Натальная карта"
-        if not is_admin:
-            label += f" ({natal_credits})"
-        row3.append(KeyboardButton(text=label))
+    # row3 = []
+    # if natal_credits > 0 or is_admin:
+    #     label = "🌟 Натальная карта"
+    #     if not is_admin:
+    #         label += f" ({natal_credits})"
+    #     row3.append(KeyboardButton(text=label))
 
     # Ряд 4: Профиль и Справка
     row4 = [

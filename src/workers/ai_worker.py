@@ -1,3 +1,4 @@
+#src\workers\ai_worker.py
 import asyncio
 import json
 import sys
@@ -26,22 +27,7 @@ from src.utils.text import clean_html_for_telegram
 
 
 
-COACH_ROLES = {
-    "nutrition": (
-        "Твоя узкая специализация: ДИЕТОЛОГ-НУТРИЦИОЛОГ. "
-        "Ты отвечаешь ТОЛЬКО за питание, расчет калорий, БЖУ и рацион. "
-        "Если тебя спросят про тренировки — вежливо напомни, что ты эксперт по питанию."
-    ),
-    "workout": (
-        "Твоя узкая специализация: ФИТНЕС-ТРЕНЕР. "
-        "Ты отвечаешь ТОЛЬКО за программу тренировок, технику упражнений и активность. "
-        "Если тебя спросят про диету — вежливо напомни, что ты эксперт по спорту."
-    ),
-    "combined": (
-        "Твоя специализация: УНИВЕРСАЛЬНЫЙ КОУЧ (Питание + Спорт). "
-        "Ты помогаешь клиенту сбалансировать и рацион, и тренировочный процесс одновременно."
-    )
-}
+
 
 async def process_task(message: aio_pika.IncomingMessage):
     """
@@ -75,7 +61,7 @@ async def process_task(message: aio_pika.IncomingMessage):
 
                 # --- СЦЕНАРИЙ 1: КОУЧ (Первая генерация или Адаптация плана) ---
                 if mode == 'coach':
-                    sub_mode = task.get('sub_mode')
+                    sub_mode = task.get('sub_mode', 'combined') # Добавь дефолт 'combined' на всякий случай
                     answers = task.get('answers')
                     survey_id = task.get('survey_id')
                     is_adaptation = task.get('is_adaptation', False)
@@ -92,12 +78,13 @@ async def process_task(message: aio_pika.IncomingMessage):
                                 old_plan_context = f"\n\nТЕКУЩИЙ ПЛАН КЛИЕНТА (нужно адаптировать):\n{msg['content']}"
                                 break
 
-                    system_prompt_template = await _get_prompt("coach")
-                    role_instruction = COACH_ROLES.get(sub_mode, COACH_ROLES["combined"]) # Определяем роль
+                    # ИЗМЕНЕНИЕ ЗДЕСЬ: Формируем ключ динамически (coach_nutrition, coach_workout...)
+                    prompt_key = f"coach_{sub_mode}"
+                    system_prompt_template = await _get_prompt(prompt_key)
 
+                    # Убираем role_instruction, так как роль теперь внутри system_prompt_template
                     system_text = (
-                        f"{role_instruction}\n\n" # <--- Вставляем роль в начало
-                        f"ОСНОВНАЯ ИНСТРУКЦИЯ:\n{system_prompt_template}\n\n"
+                        f"{system_prompt_template}\n\n"
                         f"ДАННЫЕ АНКЕТЫ: {json.dumps(answers, ensure_ascii=False)}.\n"
                         f"{old_plan_context}"
                     )
@@ -150,15 +137,14 @@ async def process_task(message: aio_pika.IncomingMessage):
                     history_for_api = user.coach_history or []
 
                     user = await session.get(User, user_id)
-                    # Достаем режим из профиля юзера (он там сохранился при анкете)
                     sub_mode = user.coach_mode or "combined" 
-                    role_instruction = COACH_ROLES.get(sub_mode, COACH_ROLES["combined"])
-
-                    system_prompt_template = await _get_prompt("coach")
+                    
+                    # ИЗМЕНЕНИЕ ЗДЕСЬ: Убрали COACH_ROLES, берем промпт по ключу
+                    prompt_key = f"coach_{sub_mode}"
+                    system_prompt_template = await _get_prompt(prompt_key)
 
                     system_prompt = (
-                        f"{role_instruction}\n\n" # <--- Инъекция роли
-                        f"ОСНОВНАЯ ИНСТРУКЦИЯ:\n{system_prompt_template}\n\n"
+                        f"{system_prompt_template}\n\n" 
                         f"ДАННЫЕ КЛИЕНТА: {json.dumps(answers, ensure_ascii=False)}.\n"
                         f"ТЕКУЩИЙ ПЛАН: {current_plan}"
                     )
@@ -254,7 +240,10 @@ async def process_task(message: aio_pika.IncomingMessage):
                     # Берем актуальную историю
                     history_for_api = list(user.coach_history) if user.coach_history else []
 
-                    system_prompt_template = await _get_prompt("coach")
+                    sub_mode = user.coach_mode or "combined" 
+                    prompt_key = f"coach_{sub_mode}"
+                    system_prompt_template = await _get_prompt(prompt_key)
+
                     system_prompt = (
                         f"{system_prompt_template}\n"
                         f"Данные клиента: {json.dumps(answers, ensure_ascii=False)}.\n"

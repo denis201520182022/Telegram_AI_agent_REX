@@ -1,3 +1,5 @@
+#src\bot\main.py
+
 import asyncio
 import sys
 import datetime
@@ -176,7 +178,7 @@ async def main():
     dp.include_router(menu_router.router)   # Главное меню
     dp.include_router(coach_router.router)  # Логика чата коуча
     dp.include_router(survey_router.router) # Опросы
-    dp.include_router(dating_router.router) # Дейтинг (лайки/дизлайки)
+    #dp.include_router(dating_router.router) # Дейтинг (лайки/дизлайки)
     dp.include_router(profile_router.router)# Настройки профиля
     
     # Регистрация стартовой команды

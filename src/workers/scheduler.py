@@ -1,3 +1,5 @@
+
+#src\workers\scheduler.py
 import asyncio
 import json
 import sys
@@ -141,8 +143,8 @@ async def main():
     
     # Задачи планировщика
     scheduler.add_job(safe_job_run, 'interval', minutes=3, args=[update_surveys, 'update_surveys'])
-    scheduler.add_job(safe_job_run, 'cron', hour=12, minute=0, args=[run_daily_matching, 'dating'])
-    scheduler.add_job(safe_job_run, 'cron', hour=8, minute=0, args=[update_daily_horoscopes, 'horoscopes'])
+    #scheduler.add_job(safe_job_run, 'cron', hour=12, minute=0, args=[run_daily_matching, 'dating'])
+    #scheduler.add_job(safe_job_run, 'cron', hour=8, minute=0, args=[update_daily_horoscopes, 'horoscopes'])
     scheduler.add_job(safe_job_run, 'cron', minute=0, args=[check_tracking_times, 'tracking_hourly'])
     # Для теста можно поставить проверку раз в минуту
     scheduler.add_job(safe_job_run, 'interval', minutes=1, args=[check_tracking_times, 'tracking_test'])
@@ -153,8 +155,8 @@ async def main():
     try:
         await update_surveys()
         # Если в редисе нет гороскопов, генерим сразу
-        if not await redis_service.get("horoscope_daily:aries"):
-            await update_daily_horoscopes()
+        #if not await redis_service.get("horoscope_daily:aries"):
+            #await update_daily_horoscopes()
     except Exception as e:
         logger.error("scheduler_init_error", error=str(e))
 
