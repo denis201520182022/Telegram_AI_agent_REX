@@ -98,53 +98,54 @@ async def start_coach_survey(message: Message, state: FSMContext):
 @router.callback_query(SurveyState.choosing_mode, F.data.startswith("mode_"))
 async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
     selected_mode = callback.data.split("_")[1]
+    user_id = callback.from_user.id
     
-    # 1. ЗАГРУЖАЕМ ВСЕ КАТЕГОРИИ
-    # Сначала всегда берем базу (Имя, Возраст, Рост, Вес)
+    # 1. ЗАГРУЖАЕМ ВОПРОСЫ
     base_questions = await redis_service.get_survey_config("coach") or []
     
-    # Догружаем вопросы конкретного режима
     mode_questions = []
-    if selected_mode == "nutrition":
-        mode_questions = await redis_service.get_survey_config("nutrition") or []
-    elif selected_mode == "workout":
+    if selected_mode == "workout":
         mode_questions = await redis_service.get_survey_config("workout") or []
+    elif selected_mode == "nutrition":
+        mode_questions = await redis_service.get_survey_config("nutrition") or []
     elif selected_mode == "combined":
-        # Склеиваем питание и тренировки для комбинированного режима
-        nut = await redis_service.get_survey_config("nutrition") or []
+        # Склеиваем: сначала тренировки, потом питание (так логичнее для анкеты)
         wor = await redis_service.get_survey_config("workout") or []
-        mode_questions = nut + wor
+        nut = await redis_service.get_survey_config("nutrition") or []
+        mode_questions = wor + nut
 
-    # Итоговый полный список: База всегда ПЕРВОЙ
     all_target_questions = base_questions + mode_questions
-
     if not all_target_questions:
-        await callback.answer("Ошибка: вопросы в таблице не найдены!", show_alert=True)
+        await callback.answer("Ошибка: вопросы не найдены!", show_alert=True)
         return
         
     data = await state.get_data()
     is_adaptation = data.get('is_adaptation', False)
-    current_answers = data.get('answers', {})
-
-    final_questions_to_ask = []
-
-    # --- КЛЮЧЕВАЯ ЛОГИКА ---
+    
+    # 2. ПОДТЯГИВАЕМ СТАРЫЕ ОТВЕТЫ ПРИ АДАПТАЦИИ
+    current_answers = {}
     if is_adaptation:
-        # Если это АДАПТАЦИЯ (из настроек): спрашиваем только то, чего не хватает
-        for q in all_target_questions:
-            if q['key'] not in current_answers:
-                final_questions_to_ask.append(q)
-    else:
-        # Если это НОВАЯ АНКЕТА или СБРОС (Reset): спрашиваем ВООБЩЕ ВСЁ с нуля
-        final_questions_to_ask = all_target_questions
-        current_answers = {} # Принудительно очищаем старые ответы
+        async with async_session_maker() as session:
+            survey = await session.scalar(
+                select(UserSurvey)
+                .where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach')
+                .order_by(desc(UserSurvey.created_at))
+            )
+            if survey and survey.answers:
+                current_answers = dict(survey.answers) # Безопасное копирование
 
-    # 4. Если вопросов реально нет (такое может быть только при адаптации)
+    # 3. ФИЛЬТРАЦИЯ: Оставляем только те вопросы, которых нет в current_answers
+    final_questions_to_ask = []
+    for q in all_target_questions:
+        if q['key'] not in current_answers:
+            final_questions_to_ask.append(q)
+
+    # 4. Если дозадавать ничего не нужно (например, перешли из Combined в Workout)
     if not final_questions_to_ask:
-        await callback.message.edit_text("⏳ <b>Данные актуальны. Обновляю план...</b>", parse_mode="HTML")
-        return await finish_setup_for_adaptation(callback, state, selected_mode)
+        await callback.message.edit_text("✅ <b>Данные актуальны. Обновляю ваш план...</b>", parse_mode="HTML")
+        return await finish_setup_for_adaptation(callback, state, selected_mode, current_answers)
 
-    # 5. Запускаем анкету с ПЕРВОГО вопроса (current_step=0)
+    # 5. Запуск опроса
     await state.update_data(
         survey_mode=selected_mode,
         questions=final_questions_to_ask,
@@ -159,23 +160,16 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
 
 # --- ВАЖНО: Добавьте новую вспомогательную функцию в конец файла ---
 # Она нужна для случая, когда дозадавать вопросы не нужно
-async def finish_setup_for_adaptation(callback: CallbackQuery, state: FSMContext, new_sub_mode: str):
-    """
-    Завершает процесс адаптации, если новых вопросов задавать не потребовалось.
-    Обновляет режим в БД и отправляет задачу ИИ.
-    """
+async def finish_setup_for_adaptation(callback: CallbackQuery, state: FSMContext, new_sub_mode: str, answers: dict):
     user_id = callback.from_user.id
-    data = await state.get_data()
-    answers = data.get('answers', {})
     
     async with async_session_maker() as session:
-        # 1. ОБЯЗАТЕЛЬНО обновляем coach_mode в таблице User
-        # Чтобы ИИ воркер при генерации промпта понимал новый контекст (диетолог/тренер)
+        # Обновляем режим тренера у юзера
         await session.execute(
             update(User).where(User.user_id == user_id).values(coach_mode=new_sub_mode)
         )
 
-        # 2. Обновляем саму анкету
+        # Обновляем существующую анкету или создаем новую
         survey = await session.scalar(
             select(UserSurvey)
             .where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach')
@@ -183,12 +177,10 @@ async def finish_setup_for_adaptation(callback: CallbackQuery, state: FSMContext
         )
         
         if survey:
-            # Обновляем ответы (если в процессе адаптации что-то добавилось) и под-режим
-            survey.answers = answers
+            survey.answers = answers # Тут лежат и старые, и возможные новые ответы
             survey.sub_mode = new_sub_mode
             survey_id = survey.id
         else:
-            # Если вдруг анкеты не было (защита от ошибок)
             new_survey = UserSurvey(
                 user_id=user_id, 
                 mode='coach', 
@@ -202,7 +194,6 @@ async def finish_setup_for_adaptation(callback: CallbackQuery, state: FSMContext
         
         await session.commit()
 
-    # 3. Отправляем задачу воркеру с флагом адаптации (история в БД НЕ ТРОНУТА)
     task = {
         "user_id": user_id, 
         "mode": "coach", 
@@ -213,9 +204,9 @@ async def finish_setup_for_adaptation(callback: CallbackQuery, state: FSMContext
     }
     await send_to_queue("q_ai_generation", task)
     
-    # 4. Переводим в режим чата и очищаем временные флаги анкеты
     await state.set_state(CoachState.chatting)
     await state.update_data(is_adaptation=False, questions=None, current_step=0)
+    await callback.message.answer("🚀 Режим изменен. Готовим обновленные рекомендации...")
 
 # --- 2. ЗАДАЕМ ВОПРОСЫ ---
 async def _ask_question(message: Message, state: FSMContext):
@@ -377,38 +368,31 @@ async def _save_answer_and_next(message: Message, state: FSMContext, answer):
 async def _finish_questions(message: Message, state: FSMContext):
     data = await state.get_data()
     answers = data['answers']
-    mode = data.get('survey_mode')
     is_adaptation = data.get('is_adaptation', False)
     
-    # Формируем красивый список ответов
-    summary = "📋 <b>Ваши ответы:</b>\n\n"
-    questions_map = {q['key']: q['text'] for q in data['questions']}
+    # Чтобы в сводке были красивые названия, берем тексты из текущего списка вопросов
+    # Если это адаптация, в answers могут быть старые ключи, которых нет в текущем списке вопросов
+    questions_map = {q['key']: q['text'] for q in data.get('questions', [])}
     
-    # Список ключей, которые МЫ НЕ ПОКАЗЫВАЕМ пользователю (технические)
-    hidden_keys = ["birth_date"]
+    summary = "📋 <b>Ваши ответы:</b>\n\n"
+    hidden_keys = ["birth_date", "birth_day", "birth_month", "birth_year"]
 
     for key, val in answers.items():
         if key in hidden_keys:
             continue
             
+        # Если ключа нет в текущем списке (это старый ответ), 
+        # при адаптации его можно просто не показывать в сводке «новых» ответов
+        if key not in questions_map and is_adaptation:
+            continue
+            
         q_text = questions_map.get(key, key)
-        # Чистим текст вопроса от лишних символов для сводки
-        short_q = q_text.replace("✅ ", "").replace("📅 ", "").replace("🗓 ", "").split('?')[0]
+        short_q = q_text.replace("✅ ", "").replace("🏃 ", "").replace("🥗 ", "").split('?')[0]
         
-        # Если это месяц, можно вернуть название обратно для красоты
-        if key == "birth_month":
-            inv_months = {"01":"Январь","02":"Февраль","03":"Март","04":"Апрель","05":"Май","06":"Июнь",
-                          "07":"Июль","08":"Август","09":"Сентябрь","10":"Октябрь","11":"Ноябрь","12":"Декабрь"}
-            val = inv_months.get(val, val)
-
-        # === ИСПРАВЛЕНИЕ ТУТ ===
-        # Экранируем вопрос и ответ, чтобы символы < > не ломали разметку
-        # str(val) нужен, так как ответ может быть числом
         safe_q = html.escape(short_q)
         safe_val = html.escape(str(val)) 
 
         summary += f"▫️ {safe_q}: <b>{safe_val}</b>\n"
-        # =======================
         
     summary += "\nПроверьте, всё ли верно?"
     
@@ -454,14 +438,22 @@ async def confirm_survey(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     mode = data.get('survey_mode')
     user_id = callback.from_user.id
+    is_adaptation = data.get('is_adaptation', False)
 
-    # Если это НЕ коуч (Дейтинг или Натальная карта), завершаем сразу
     if mode in ['dating', 'natal', 'horoscope']:
         await _finish_non_coach_survey(callback.message, state)
-        await callback.answer("✅ Данные сохранены!")
-        return
+        return await callback.answer("✅ Данные сохранены!")
 
-    # Для коуча — стандартная проверка политики и переход к таймзонам
+    # --- ЛОГИКА ДЛЯ КОУЧА ---
+    # Если это АДАПТАЦИЯ — скипаем настройки времени и политики, идем в финал
+    if is_adaptation:
+        await callback.message.edit_text("⏳ <b>Обновляю настройки и генерирую новый план...</b>", parse_mode="HTML")
+        # Передаем заглушку времени, так как функция finish_setup её ждет, 
+        # но внутри она подтянет реальные данные из БД если надо
+        callback.data = "time_09:00" 
+        return await finish_setup(callback, state)
+
+    # Если новая анкета — стандартный путь
     async with async_session_maker() as session:
         user = await session.get(User, user_id)
         has_accepted = user.has_accepted_policy if user else False
@@ -523,60 +515,55 @@ async def process_timezone(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(SurveyState.choosing_time, F.data.startswith("time_"))
 async def finish_setup(callback: CallbackQuery, state: FSMContext):
-    time_str = callback.data.split("_")[1] # 09:00
-    # Преобразуем в объект time
-    h, m = map(int, time_str.split(":"))
-    track_time = datetime.time(h, m)
-    
     data = await state.get_data()
-    answers = data['answers']
-    mode = data['survey_mode'] # nutrition, workout, combined
-    tz = data.get('selected_timezone', 'UTC')
-    user_id = callback.from_user.id
-    
-    await callback.message.edit_text("⏳ <b>Спасибо! Анализирую данные и составляю план...</b>\n", reply_markup=None, parse_mode="HTML")
-    
-    # 1. Сохраняем всё в БД
-    async with async_session_maker() as session:
-        # Обновляем юзера
-        u_stmt = update(User).where(User.user_id == user_id).values(
-            timezone=tz,
-            tracking_time=track_time,
-            coach_mode=mode,
-            is_tracking_enabled=True
-        )
-        await session.execute(u_stmt)
-        
-        # Создаем запись анкеты
-        # sub_mode=mode, а основной mode='coach'
-        survey = UserSurvey(
-            user_id=user_id,
-            mode="coach",
-            sub_mode=mode,
-            survey_config_id=1, # Заглушка, можно брать реальный ID конфига
-            answers=answers
-        )
-        session.add(survey)
-        await session.flush()
-        survey_id = survey.id
-        await session.commit()
-    
     is_adaptation = data.get('is_adaptation', False)
+    user_id = callback.from_user.id
+    answers = data['answers']
+    mode = data['survey_mode']
 
-    # 2. Отправляем задачу AI Worker-у
-    task = {
-        "user_id": user_id,
-        "mode": "coach",
-        "sub_mode": mode,
-        "answers": answers,
-        "survey_id": survey_id,
-        "is_adaptation": is_adaptation # Передаем флаг адаптации
-    }
+    # Для новой анкеты берем время из кнопки, для адаптации — оставляем как есть в БД
+    track_time = None
+    tz = data.get('selected_timezone')
+    if not is_adaptation:
+        time_str = callback.data.split("_")[1]
+        h, m = map(int, time_str.split(":"))
+        track_time = datetime.time(h, m)
+
+    await callback.message.edit_text("⏳ <b>Анализирую данные и составляю план...</b>", reply_markup=None, parse_mode="HTML")
+    
+    async with async_session_maker() as session:
+        # 1. Обновляем юзера (только нужные поля)
+        update_vals = {"coach_mode": mode}
+        if not is_adaptation:
+            update_vals.update({"timezone": tz, "tracking_time": track_time, "is_tracking_enabled": True})
+        
+        await session.execute(update(User).where(User.user_id == user_id).values(**update_vals))
+        
+        # 2. Работа с анкетой
+        survey = None
+        if is_adaptation:
+            survey = await session.scalar(
+                select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach').order_by(desc(UserSurvey.created_at))
+            )
+        
+        if survey:
+            survey.answers = answers
+            survey.sub_mode = mode
+            survey_id = survey.id
+        else:
+            new_survey = UserSurvey(user_id=user_id, mode="coach", sub_mode=mode, answers=answers, survey_config_id=1)
+            session.add(new_survey)
+            await session.flush()
+            survey_id = new_survey.id
+        
+        await session.commit()
+
+    # 3. Отправка в AI
+    task = {"user_id": user_id, "mode": "coach", "sub_mode": mode, "answers": answers, "survey_id": survey_id, "is_adaptation": is_adaptation}
     await send_to_queue("q_ai_generation", task)
     
-    # 3. Переводим юзера в режим чата
     await state.set_state(CoachState.chatting)
-    await callback.answer()
+    await state.update_data(is_adaptation=False)
 
 # --- ОТМЕНА ---
 @router.callback_query(F.data == "cancel_survey")
