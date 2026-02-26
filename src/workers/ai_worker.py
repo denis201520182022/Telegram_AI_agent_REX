@@ -26,8 +26,22 @@ from src.utils.text import clean_html_for_telegram
 # src/workers/ai_worker.py
 
 
+from aiogram import Bot
+from aiogram.enums import ChatAction
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
+bot_instance = None
 
+async def keep_typing(chat_id: int, stop_event: asyncio.Event):
+    """Фоновая задача для поддержания статуса 'печатает'."""
+    global bot_instance
+    while not stop_event.is_set():
+        try:
+            await bot_instance.send_chat_action(chat_id, ChatAction.TYPING)
+            await asyncio.sleep(4.5) # Обновляем каждые 4.5 секунды
+        except Exception:
+            break
 
 async def process_task(message: aio_pika.IncomingMessage):
     """
@@ -47,7 +61,8 @@ async def process_task(message: aio_pika.IncomingMessage):
         mode = task.get('mode')
         log = logger.bind(user_id=user_id, mode=mode, worker="ai_worker")
         log.info("task_started")
-
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(keep_typing(user_id, stop_typing))
         try:
             async with async_session_maker() as session:
 
@@ -268,9 +283,22 @@ async def process_task(message: aio_pika.IncomingMessage):
             log.error("task_failed", error=str(e))
             AI_TASK_PROCESSED.labels(mode=mode, status="error").inc()
             await send_alert(e, context=f"AI Worker CRITICAL ({mode})")
+        finally:
+            # --- ВСТАВИТЬ ЭТО: Остановка статуса "печатает" ---
+            stop_typing.set()
+            await typing_task
+
+
 
 async def main():
+    global bot_instance
     logger.info("service_started", service="ai_worker")
+    
+    # --- ВСТАВИТЬ ЭТО: Инициализация бота ---
+    bot_instance = Bot(
+        token=settings.BOT_TOKEN.get_secret_value(),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     connection = await aio_pika.connect_robust(settings.RABBIT_URL)
     channel = await connection.channel()
     queue = await channel.declare_queue("q_ai_generation", durable=True)

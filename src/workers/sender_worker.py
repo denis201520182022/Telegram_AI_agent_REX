@@ -5,7 +5,7 @@ import aio_pika
 from os.path import abspath, dirname
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
-
+from aiogram.enums import ChatAction
 # Магия путей
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
 from src.utils.text import clean_html_for_telegram
@@ -49,7 +49,11 @@ async def process_notification(message: aio_pika.IncomingMessage, bot: Bot):
 
             log = logger.bind(user_id=user_id, worker="sender")
             log.info("sending_message_attempt")
-
+            # --- ВСТАВИТЬ ЭТО: Короткий сигнал "печатает" для плавности ---
+            try:
+                await bot.send_chat_action(chat_id=user_id, action=ChatAction.TYPING)
+            except: pass # Если не вышло (например, юзер заблочил), не прерываем отправку
+            
             # --- ОТПРАВКА ---
             if photo:
                 # Если передан URL или file_id фото
