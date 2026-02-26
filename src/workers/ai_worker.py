@@ -126,77 +126,56 @@ async def process_task(message: aio_pika.IncomingMessage):
                 # --- СЦЕНАРИЙ 2: ЧАТ (Свободное общение) ---
                 elif mode == 'chat':
                     user = await session.get(User, user_id)
-                    if not user:
-                        log.error("user_not_found", user_id=user_id)
-                        return
+                    if not user: return
 
                     survey = await session.scalar(
-                        select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach').order_by(desc(UserSurvey.created_at))
+                        select(UserSurvey)
+                        .where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach')
+                        .order_by(desc(UserSurvey.created_at))
                     )
-                    current_plan = survey.current_plan if survey else "План еще не создан."
-                    answers = survey.answers if survey else {}
-
-                    history_for_api = user.coach_history or []
-
-                    user = await session.get(User, user_id)
-                    sub_mode = user.coach_mode or "combined" 
                     
-                    # ИЗМЕНЕНИЕ ЗДЕСЬ: Убрали COACH_ROLES, берем промпт по ключу
-                    prompt_key = f"coach_{sub_mode}"
-                    system_prompt_template = await _get_prompt(prompt_key)
-
+                    # Собираем контекст для ИИ
+                    current_plan_in_db = survey.current_plan if survey else "План еще не создан."
                     system_prompt = (
-                        f"{system_prompt_template}\n\n" 
-                        f"ДАННЫЕ КЛИЕНТА: {json.dumps(answers, ensure_ascii=False)}.\n"
-                        f"ТЕКУЩИЙ ПЛАН: {current_plan}"
+                        f"{await _get_prompt(f'coach_{user.coach_mode or 'combined'}')}\n\n"
+                        f"ДАННЫЕ КЛИЕНТА: {json.dumps(survey.answers if survey else {}, ensure_ascii=False)}.\n"
+                        f"ТЕКУЩИЙ ПЛАН: {current_plan_in_db}"
                     )
 
-                    if len(history_for_api) > 15:
-                        history_for_api = history_for_api[-15:]
-                    
+                    # Запрос к ИИ (ЕДИНСТВЕННЫЙ)
+                    history_for_api = user.coach_history[-15:] if user.coach_history else []
                     ai_raw = await generate_response(system_prompt, history_for_api)
-                    log.info("ai_response_text", raw_text=ai_raw)
 
-                    should_update_full_plan = "[UPDATE_PLAN]" in ai_raw
-                    final_reply = ai_raw.replace("[UPDATE_PLAN]", "").strip()
-                    clean_text = clean_html_for_telegram(final_reply)
+                    # --- ЛОГИКА ОБРАБОТКИ ОБНОВЛЕНИЯ ---
+                    if "[UPDATE_PLAN]" in ai_raw:
+                        # 1. Извлекаем текст плана, который идет после тега
+                        parts = ai_raw.split("[UPDATE_PLAN]")
+                        chat_comment = parts[0].strip() # То, что ИИ сказал в чате
+                        new_plan_content = parts[1].strip() # Сам новый план
 
-                    # 1. Сначала отправляем обычный текстовый ответ ИИ (если он не пустой)
-                    if clean_text:
-                        await send_to_queue("q_notifications", {"user_id": user_id, "text": clean_text})
+                        # 2. Чистим план и сохраняем в БД
+                        clean_plan = clean_html_for_telegram(new_plan_content)
+                        if survey:
+                            survey.current_plan = clean_plan
+                            await session.commit()
                         
-                        # Сохраняем этот ответ в историю
-                        new_history = list(user.coach_history) if user.coach_history else []
-                        new_history.append({'role': 'assistant', 'content': clean_text})
+                        # 3. Подготавливаем текст для отправки юзеру (убираем только технический тег)
+                        final_text_for_user = ai_raw.replace("[UPDATE_PLAN]", "").strip()
+                    else:
+                        final_text_for_user = ai_raw
+
+                    # Чистим весь ответ для Telegram (наша функция clean_html_for_telegram справится)
+                    clean_final_text = clean_html_for_telegram(final_text_for_user)
+
+                    if clean_final_text:
+                        # Сохраняем в историю и отправляем
+                        new_history = list(user.coach_history or [])
+                        new_history.append({'role': 'assistant', 'content': clean_final_text})
                         user.coach_history = new_history
                         flag_modified(user, "coach_history")
+                        await session.commit()
 
-                    # 2. Если есть тег обновления, генерируем и отправляем план вторым сообщением
-                    if should_update_full_plan and survey:
-                        log.info("triggering_full_plan_rebuild")
-                        
-                        update_instruction = {
-                            "role": "user", 
-                            "content": "[SYSTEM COMMAND] На основе диалога составь ПОЛНУЮ обновленную версию плана. "
-                                       "Выдай ТОЛЬКО текст плана в HTML. Без вступлений."
-                        }
-                        
-                        history_for_update = history_for_api + [update_instruction]
-                        new_plan_raw = await generate_response(system_prompt, history_for_update)
-                        new_plan_clean = clean_html_for_telegram(new_plan_raw)
-
-                        # Оборачиваем НОВЫЙ текст в цитату
-                        formatted_new_plan = f"<blockquote expandable>{new_plan_clean}</blockquote>"
-
-                        survey.current_plan = formatted_new_plan
-                        
-                        # Отправляем в Телеграм
-                        await send_to_queue("q_notifications", {
-                            "user_id": user_id,
-                            "text": f"🪄 <b>Я внес изменения в твой план:</b>\n\n{formatted_new_plan}"
-                        })
-
-                    await session.commit()
+                        await send_to_queue("q_notifications", {"user_id": user_id, "text": clean_final_text})
 
                 # --- СЦЕНАРИЙ 3: НАТАЛЬНАЯ КАРТА ---
                 # --- СЦЕНАРИЙ 3: НАТАЛЬНАЯ КАРТА ---

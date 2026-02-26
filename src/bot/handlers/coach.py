@@ -25,22 +25,40 @@ router = Router()
 # --- ОСНОВНЫЕ КНОПКИ МЕНЮ КОУЧА ---
 
 @router.message(CoachState.chatting, F.text == "📋 Мой план")
-async def show_current_plan(message: Message):
-    """Показывает текущий сохраненный план."""
-    user_id = message.from_user.id
+async def get_current_plan_btn(message: Message, state: FSMContext):
+    # 1. Скрываем действие: удаляем сообщение пользователя "📋 Мой план"
+    # try:
+    #     #await message.delete()
+    # except:
+    #     pass
+
+    # 2. Твоя секретная инструкция для ИИ
+    system_instruction = (
+        "Пользователь запрашивает свой текущий план. "
+        "Твоя задача: напиши короткую вежливую фразу (например: 'Вот твой актуальный план:'), "
+        "затем поставь тег [UPDATE_PLAN] и сразу после него выдай ПОЛНУЮ версию плана в HTML "
+        "внутри тега <blockquote expandable>. "
+        "Опирайся на последнюю версию плана и историю правок."
+    )
+
+    # 3. Отправляем задачу в AI Worker (режим chat, но с нашей инструкцией)
+    # Мы добавляем эту инструкцию в историю сообщений как будто её написал юзер
     async with async_session_maker() as session:
-        survey = await session.scalar(
-            select(UserSurvey)
-            .where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach')
-            .order_by(desc(UserSurvey.created_at))
-            .limit(1)
-        )
-        
-        if survey and survey.current_plan:
-            plan_text = survey.current_plan[:4000] # Лимит сообщения TG
-            await message.answer(f"📄 <b>Ваш текущий план:</b>\n\n{plan_text}", parse_mode="HTML")
-        else:
-            await message.answer("⚠️ План еще не сформирован. Попробуйте написать что-нибудь коучу.")
+        user = await session.get(User, message.from_user.id)
+        if user:
+            new_history = list(user.coach_history) if user.coach_history else []
+            new_history.append({"role": "user", "content": system_instruction})
+            user.coach_history = new_history
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(user, "coach_history")
+            await session.commit()
+
+    # Пушим задачу воркеру
+    await send_to_queue("q_ai_generation", {
+        "user_id": message.from_user.id,
+        "mode": "chat"
+    })
+
 
 @router.message(CoachState.chatting, F.text == "⚙️ Настройки режима")
 async def coach_settings(message: Message):

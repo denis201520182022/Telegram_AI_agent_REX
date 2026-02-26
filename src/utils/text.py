@@ -1,67 +1,81 @@
-#src\utils\text.py
 import re
-import re
-import html
 
 def clean_html_for_telegram(text: str) -> str:
     """
     Превращает Markdown и кривой HTML от ИИ в чистый, валидный Telegram HTML.
-    Поддерживает жирный, курсив, код и раскрывающиеся цитаты.
+    Исправляет незакрытые теги (code, b, i, blockquote) для предотвращения Bad Request.
     """
     if not text:
         return ""
 
-    # 1. ПРЕД-ОЧИСТКА: Убираем Markdown-обертки кода (часто ИИ сует весь ответ в них)
+    # 1. ПРЕД-ОЧИСТКА: Убираем Markdown-обертки кода
     text = re.sub(r'```(?:html|text|markdown|python)?', '', text, flags=re.IGNORECASE)
     text = re.sub(r'```', '', text)
 
-    # 2. ОБРАБОТКА СПИСКОВ (До того как удалим теги)
-    # Превращаем <li> в буллиты, а <ul>/ <ol> просто удаляем
+    # 2. ОБРАБОТКА СПИСКОВ (Переводим <li> в буллиты до удаления тегов)
     text = re.sub(r'<li[^>]*>', '• ', text, flags=re.IGNORECASE)
     text = re.sub(r'</li>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'</?(ul|ol)[^>]*>', '', text, flags=re.IGNORECASE)
 
-    # 3. КОНВЕРТАЦИЯ MARKDOWN В HTML
-    # **Жирный** -> <b>
+    # 3. КОНВЕРТАЦИЯ MARKDOWN В HTML (Сохраняем твою логику)
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    # ### Заголовок -> <b> (Телеграм не знает h1-h6)
     text = re.sub(r'#{1,6}\s*(.*)', r'<b>\1</b>', text)
-    # - Список или * Список -> • Список (для Markdown списков)
     text = re.sub(r'^\s*[\-\*•]\s*', '• ', text, flags=re.MULTILINE)
 
-    # 4. ОЧИСТКА ЗАПРЕЩЕННЫХ ТЕГОВ (layout)
-    # Заменяем структурные теги (div, p, h, table) на переносы строк
+    # 4. ОЧИСТКА ЗАПРЕЩЕННЫХ ТЕГОВ (Разметка таблиц, дивов и т.д. -> в переносы)
     text = re.sub(r'</?(table|tr|thead|tbody|th|td|div|p|h[1-6])[^>]*>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
 
-    # 5. КРАЙНЕ ВАЖНО: Фильтрация атрибутов, но сохранение нужных
-    # Мы оставляем только <b>, <i>, <u>, <s>, <a>, <code>, <pre>, <blockquote>, <tg-spoiler>
-    # При этом у <a> оставляем href, а у <blockquote> оставляем expandable
-    
-    # Сначала очищаем атрибуты у всех тегов, кроме <a> и <blockquote>
+    # 5. ФИЛЬТРАЦИЯ АТРИБУТОВ (Сохраняем href и expandable)
+    # Сначала очищаем атрибуты у всех, кроме а и blockquote
     text = re.sub(r'<(?!a|blockquote|/)([^> \n]+)[^>]*>', r'<\1>', text)
-    
-    # У <blockquote> удаляем всё, кроме атрибута expandable
-    # (ИИ может добавить class или style, что сломает Телеграм)
+    # У цитат оставляем только expandable
     text = re.sub(r'<blockquote(?![ \t]+expandable)[^>]*>', '<blockquote>', text, flags=re.IGNORECASE)
 
-    # 6. ФИНАЛЬНАЯ ГИГИЕНА ТЕГОВ
-    # Удаляем любые теги, которые не входят в "белый список" Телеграма
+    # 6. ФИНАЛЬНАЯ ГИГИЕНА (Удаляем всё, что не поддерживает Телеграм)
     allowed_tags = r'b|i|u|s|a|code|pre|blockquote|tg-spoiler|ins|del|strong|em'
     text = re.sub(r'<(?!/?(' + allowed_tags + r'))[^>]+>', '', text)
 
-    # 7. КРАСИВОЕ ФОРМАТИРОВАНИЕ (Уплотнение и отступы)
-    # Убираем лишние пробелы в конце строк
+    # 7. УПЛОТНЕНИЕ СТРОК (Убираем "дыры", сохраняем максимум 1 пустую строку)
     lines = [line.strip() for line in text.split('\n')]
-    
-    # Собираем текст, не допуская более двух пустых строк подряд (чтобы план не был слишком растянутым)
     final_lines = []
     for line in lines:
         if line:
             final_lines.append(line)
-        elif final_lines and final_lines[-1] != "": # Разрешаем максимум одну пустую строку для абзаца
+        elif final_lines and final_lines[-1] != "":
             final_lines.append("")
-            
     text = '\n'.join(final_lines)
+
+    # === 8. УЛУЧШЕНИЕ: АВТО-ЗАКРЫТИЕ ТЕГОВ (Защита от Bad Request) ===
+    # Список тегов, которые требуют обязательного закрытия
+    tags_to_balance = [
+        'b', 'strong', 'i', 'em', 'u', 'ins', 's', 
+        'strike', 'del', 'code', 'pre', 'blockquote', 'tg-spoiler'
+    ]
+    
+    # Ищем все открытые и закрытые теги
+    # Используем стек для правильного порядка закрытия (LIFO)
+    opened_stack = []
+    
+    # Регулярка для поиска любых тегов (открывающих и закрывающих)
+    tag_pattern = re.compile(r'<(/?)(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler|a)(?: [^>]*)?>', re.IGNORECASE)
+    
+    for match in tag_pattern.finditer(text):
+        is_closing = match.group(1) == '/'
+        tag_name = match.group(2).lower()
+        
+        if not is_closing:
+            opened_stack.append(tag_name)
+        else:
+            if opened_stack and opened_stack[-1] == tag_name:
+                opened_stack.pop()
+            elif tag_name in opened_stack:
+                # Если закрывается не тот тег, что вверху стека, но он есть в стеке
+                opened_stack.remove(tag_name)
+                
+    # Закрываем все оставшиеся в стеке теги в обратном порядке
+    while opened_stack:
+        tag_to_close = opened_stack.pop()
+        text += f'</{tag_to_close}>'
 
     return text.strip()
