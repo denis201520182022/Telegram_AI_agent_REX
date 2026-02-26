@@ -99,49 +99,56 @@ async def start_coach_survey(message: Message, state: FSMContext):
 async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
     selected_mode = callback.data.split("_")[1]
     
-    # 1. Загружаем БАЗОВЫЕ вопросы (Имя, Возраст и т.д.)
-    target_questions = await redis_service.get_survey_config("coach") or []
+    # 1. ЗАГРУЖАЕМ ВСЕ КАТЕГОРИИ
+    # Сначала всегда берем базу (Имя, Возраст, Рост, Вес)
+    base_questions = await redis_service.get_survey_config("coach") or []
     
-    # 2. Догружаем специфические вопросы выбранного режима
+    # Догружаем вопросы конкретного режима
+    mode_questions = []
     if selected_mode == "nutrition":
-        target_questions += await redis_service.get_survey_config("nutrition") or []
+        mode_questions = await redis_service.get_survey_config("nutrition") or []
     elif selected_mode == "workout":
-        target_questions += await redis_service.get_survey_config("workout") or []
+        mode_questions = await redis_service.get_survey_config("workout") or []
     elif selected_mode == "combined":
-        # Для комбинированного складываем базу + питание + тренировки
-        target_questions += await redis_service.get_survey_config("nutrition") or []
-        target_questions += await redis_service.get_survey_config("workout") or []
-    
-    if not target_questions:
-        await callback.answer("Ошибка: вопросы не загружены.", show_alert=True)
+        # Склеиваем питание и тренировки для комбинированного режима
+        nut = await redis_service.get_survey_config("nutrition") or []
+        wor = await redis_service.get_survey_config("workout") or []
+        mode_questions = nut + wor
+
+    # Итоговый полный список: База всегда ПЕРВОЙ
+    all_target_questions = base_questions + mode_questions
+
+    if not all_target_questions:
+        await callback.answer("Ошибка: вопросы в таблице не найдены!", show_alert=True)
         return
         
     data = await state.get_data()
     is_adaptation = data.get('is_adaptation', False)
     current_answers = data.get('answers', {})
 
-    # --- ЛОГИКА УМНОЙ ФИЛЬТРАЦИИ ---
     final_questions_to_ask = []
+
+    # --- КЛЮЧЕВАЯ ЛОГИКА ---
     if is_adaptation:
-        # Оставляем только те вопросы, ключей которых НЕТ в текущих ответах
-        for q in target_questions:
+        # Если это АДАПТАЦИЯ (из настроек): спрашиваем только то, чего не хватает
+        for q in all_target_questions:
             if q['key'] not in current_answers:
                 final_questions_to_ask.append(q)
     else:
-        # Если не адаптация — задаем всё из собранного списка
-        final_questions_to_ask = target_questions
-        current_answers = {} 
+        # Если это НОВАЯ АНКЕТА или СБРОС (Reset): спрашиваем ВООБЩЕ ВСЁ с нуля
+        final_questions_to_ask = all_target_questions
+        current_answers = {} # Принудительно очищаем старые ответы
 
-    # 4. Если после фильтрации вопросов не осталось — сразу на генерацию
+    # 4. Если вопросов реально нет (такое может быть только при адаптации)
     if not final_questions_to_ask:
-        await callback.message.edit_text("⏳ <b>Все данные уже есть. Начинаю адаптацию плана...</b>", parse_mode="HTML")
+        await callback.message.edit_text("⏳ <b>Данные актуальны. Обновляю план...</b>", parse_mode="HTML")
         return await finish_setup_for_adaptation(callback, state, selected_mode)
 
-    # 5. Если вопросы есть — запускаем анкету
+    # 5. Запускаем анкету с ПЕРВОГО вопроса (current_step=0)
     await state.update_data(
         survey_mode=selected_mode,
         questions=final_questions_to_ask,
-        current_step=0,
+        current_step=0, 
         answers=current_answers,
         msg_to_edit=callback.message.message_id
     )
