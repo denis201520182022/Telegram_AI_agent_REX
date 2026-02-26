@@ -7,7 +7,8 @@ def clean_html_for_telegram(text: str) -> str:
     """
     if not text:
         return ""
-
+    # СТИРАЕМ ТЕГ [UPDATE_PLAN] СРАЗУ
+    text = text.replace("[UPDATE_PLAN]", "")
     # 1. ПРЕД-ОЧИСТКА: Убираем Markdown-обертки кода
     text = re.sub(r'```(?:html|text|markdown|python)?', '', text, flags=re.IGNORECASE)
     text = re.sub(r'```', '', text)

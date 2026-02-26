@@ -1,16 +1,16 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-
 def get_coach_menu() -> ReplyKeyboardMarkup:
-    keyboard = [
-        [KeyboardButton(text="📋 Мой план")], # Новый первый ряд
-        [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="🏠 Выйти")]
-    ]
+    """
+    Главное меню в режиме общения с ИИ-коучем.
+    """
     return ReplyKeyboardMarkup(
-        keyboard=keyboard,
+        keyboard=[
+            [KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="🏠 Выйти")]
+        ],
         resize_keyboard=True,
-        input_field_placeholder="Напиши мне что-нибудь..."
+        input_field_placeholder="Спросите что-нибудь у коуча..."
     )
 
 def get_coach_settings_kb(is_tracking: bool) -> InlineKeyboardMarkup:

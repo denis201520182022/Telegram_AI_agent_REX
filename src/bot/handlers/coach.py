@@ -8,6 +8,7 @@ from src.bot.states import CoachState, SurveyState
 from src.database.session import async_session_maker
 from src.database.models import UserSurvey, User
 from src.services.rabbit import send_to_queue
+from sqlalchemy.orm.attributes import flag_modified
 import asyncio 
 from sqlalchemy.orm.attributes import flag_modified
 from src.services.redis import redis_service
@@ -49,7 +50,7 @@ async def get_current_plan_btn(message: Message, state: FSMContext):
             new_history = list(user.coach_history) if user.coach_history else []
             new_history.append({"role": "user", "content": system_instruction})
             user.coach_history = new_history
-            from sqlalchemy.orm.attributes import flag_modified
+            
             flag_modified(user, "coach_history")
             await session.commit()
 
@@ -116,8 +117,8 @@ async def change_mode_start(callback: CallbackQuery):
     await callback.message.edit_text(
         "🔄 <b>Смена формата коучинга</b>\n\n"
         "Как поступим с текущим прогрессом?\n\n"
-        "1. <b>Адаптировать</b> — ИИ переделает текущий план под новый режим (например, добавит тренировки к диете), сохраняя контекст.\n"
-        "2. <b>Заново</b> — полная очистка и прохождение нового опроса.",
+        "1. <b>Адаптировать</b> — сохраняется контекст текущего чата и план адаптируется под новый режим (питание/тренировки/все вместе).\n"
+        "2. <b>Заново</b> — полная очистка чата и и выбор режима",
         reply_markup=get_change_format_choice_kb(),
         parse_mode="HTML"
     )

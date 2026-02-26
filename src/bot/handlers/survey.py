@@ -99,26 +99,27 @@ async def start_coach_survey(message: Message, state: FSMContext):
 async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
     selected_mode = callback.data.split("_")[1]
     
-    # 1. Загружаем все вопросы для коуча
-    all_coach_questions = await redis_service.get_survey_config("coach")
-    if not all_coach_questions:
+    # 1. Загружаем БАЗОВЫЕ вопросы (Имя, Возраст и т.д.)
+    target_questions = await redis_service.get_survey_config("coach") or []
+    
+    # 2. Догружаем специфические вопросы выбранного режима
+    if selected_mode == "nutrition":
+        target_questions += await redis_service.get_survey_config("nutrition") or []
+    elif selected_mode == "workout":
+        target_questions += await redis_service.get_survey_config("workout") or []
+    elif selected_mode == "combined":
+        # Для комбинированного складываем базу + питание + тренировки
+        target_questions += await redis_service.get_survey_config("nutrition") or []
+        target_questions += await redis_service.get_survey_config("workout") or []
+    
+    if not target_questions:
         await callback.answer("Ошибка: вопросы не загружены.", show_alert=True)
         return
         
     data = await state.get_data()
     is_adaptation = data.get('is_adaptation', False)
-    current_answers = data.get('answers', {}) # Те самые ответы, что мы подгрузили выше
+    current_answers = data.get('answers', {})
 
-    # 2. Определяем нужные категории для НОВОГО режима
-    categories_needed = {"coach"} # Базовые вопросы
-    if selected_mode in ["nutrition", "combined"]:
-        categories_needed.add("nutrition")
-    if selected_mode in ["workout", "combined"]:
-        categories_needed.add("workout")
-    
-    # 3. Фильтруем вопросы по категориям
-    target_questions = [q for q in all_coach_questions if q.get("category") in categories_needed]
-    
     # --- ЛОГИКА УМНОЙ ФИЛЬТРАЦИИ ---
     final_questions_to_ask = []
     if is_adaptation:
@@ -127,9 +128,9 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
             if q['key'] not in current_answers:
                 final_questions_to_ask.append(q)
     else:
-        # Если не адаптация — задаем всё
+        # Если не адаптация — задаем всё из собранного списка
         final_questions_to_ask = target_questions
-        current_answers = {} # Сбрасываем ответы для чистого прохождения
+        current_answers = {} 
 
     # 4. Если после фильтрации вопросов не осталось — сразу на генерацию
     if not final_questions_to_ask:
@@ -141,7 +142,7 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext):
         survey_mode=selected_mode,
         questions=final_questions_to_ask,
         current_step=0,
-        answers=current_answers, # Здесь уже лежат старые ответы
+        answers=current_answers,
         msg_to_edit=callback.message.message_id
     )
     
@@ -526,7 +527,7 @@ async def finish_setup(callback: CallbackQuery, state: FSMContext):
     tz = data.get('selected_timezone', 'UTC')
     user_id = callback.from_user.id
     
-    await callback.message.edit_text("⏳ <b>Спасибо! Анализирую данные и составляю план...</b>\n<i>Это займет около 30-60 секунд.</i>", reply_markup=None, parse_mode="HTML")
+    await callback.message.edit_text("⏳ <b>Спасибо! Анализирую данные и составляю план...</b>\n", reply_markup=None, parse_mode="HTML")
     
     # 1. Сохраняем всё в БД
     async with async_session_maker() as session:
