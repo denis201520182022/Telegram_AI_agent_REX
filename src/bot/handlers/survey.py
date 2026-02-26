@@ -615,7 +615,7 @@ async def finish_setup(callback: CallbackQuery, state: FSMContext):
     # Финальное уведомление (чтобы юзер не висел на экране загрузки)
     await callback.message.answer(
         "🚀 <b>Данные приняты!</b>\n\n"
-        "Я начал составлять ваш обновленный план. Это займет немного времени"
+        "Я начал составлять ваш обновленный план. Это займет немного времени",
         parse_mode="HTML"
     )
     await callback.answer()
