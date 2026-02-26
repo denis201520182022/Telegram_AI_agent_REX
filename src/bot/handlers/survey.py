@@ -259,7 +259,8 @@ async def _ask_question(message: Message, state: FSMContext):
     )
     
     kb = None
-    if q['type'] == 'button' and q.get('options'):
+    # Если в вопросе ПРЕДУСМОТРЕНЫ варианты выбора (неважно, text это или button)
+    if q.get('options') and len(q['options']) > 0:
         kb = get_options_keyboard(q['options'])
 
     elif q['type'] == 'photo':
@@ -268,6 +269,7 @@ async def _ask_question(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="❌ Прервать", callback_data="cancel_survey")]
         ])
     else:
+        # Если вариантов нет совсем, показываем просто кнопку отмены
         kb = get_cancel_kb()
 
     if msg_id:
@@ -458,15 +460,13 @@ async def confirm_survey(callback: CallbackQuery, state: FSMContext):
         return await callback.answer("✅ Данные сохранены!")
 
     # --- ЛОГИКА ДЛЯ КОУЧА ---
-    # Если это АДАПТАЦИЯ — скипаем настройки времени и политики, идем в финал
     if is_adaptation:
+        # Для адаптации сразу идем в финал, не спрашивая часовой пояс и политику
         await callback.message.edit_text("⏳ <b>Обновляю настройки и генерирую новый план...</b>", parse_mode="HTML")
-        # Передаем заглушку времени, так как функция finish_setup её ждет, 
-        # но внутри она подтянет реальные данные из БД если надо
-        callback.data = "time_09:00" 
+        # Вызываем функцию финализации напрямую
         return await finish_setup(callback, state)
 
-    # Если новая анкета — стандартный путь
+    # Если новая анкета — проверяем политику и часовой пояс
     async with async_session_maker() as session:
         user = await session.get(User, user_id)
         has_accepted = user.has_accepted_policy if user else False
@@ -526,57 +526,99 @@ async def process_timezone(callback: CallbackQuery, state: FSMContext):
 
 # --- 6. ФИНАЛИЗАЦИЯ ---
 
+from sqlalchemy.orm.attributes import flag_modified
+
 @router.callback_query(SurveyState.choosing_time, F.data.startswith("time_"))
+@router.callback_query(SurveyState.confirmation) # Добавляем возможность вызова из подтверждения
 async def finish_setup(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     is_adaptation = data.get('is_adaptation', False)
     user_id = callback.from_user.id
-    answers = data['answers']
-    mode = data['survey_mode']
+    answers = data.get('answers', {})
+    mode = data.get('survey_mode')
 
-    # Для новой анкеты берем время из кнопки, для адаптации — оставляем как есть в БД
+    # Инициализируем переменные для новой анкеты
     track_time = None
     tz = data.get('selected_timezone')
-    if not is_adaptation:
-        time_str = callback.data.split("_")[1]
-        h, m = map(int, time_str.split(":"))
-        track_time = datetime.time(h, m)
-
-    await callback.message.edit_text("⏳ <b>Анализирую данные и составляю план...</b>", reply_markup=None, parse_mode="HTML")
     
+    # Если это НЕ адаптация, вытаскиваем время из нажатой кнопки
+    if not is_adaptation and callback.data and callback.data.startswith("time_"):
+        try:
+            time_str = callback.data.split("_")[1]
+            h, m = map(int, time_str.split(":"))
+            track_time = datetime.time(h, m)
+        except Exception as e:
+            logger.error(f"Error parsing time: {e}")
+
+    # Если мы пришли сюда через адаптацию (edit_text уже был сделан в confirm_survey), 
+    # проверяем, нужно ли менять текст
+    if not is_adaptation:
+        await callback.message.edit_text("⏳ <b>Анализирую данные и составляю план...</b>", reply_markup=None, parse_mode="HTML")
+    
+    survey_id = None
     async with async_session_maker() as session:
-        # 1. Обновляем юзера (только нужные поля)
+        # 1. Обновляем юзера
         update_vals = {"coach_mode": mode}
         if not is_adaptation:
-            update_vals.update({"timezone": tz, "tracking_time": track_time, "is_tracking_enabled": True})
+            update_vals.update({
+                "timezone": tz, 
+                "tracking_time": track_time, 
+                "is_tracking_enabled": True
+            })
         
         await session.execute(update(User).where(User.user_id == user_id).values(**update_vals))
         
         # 2. Работа с анкетой
-        survey = None
-        if is_adaptation:
-            survey = await session.scalar(
-                select(UserSurvey).where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach').order_by(desc(UserSurvey.created_at))
-            )
+        # Ищем последнюю анкету коуча
+        survey = await session.scalar(
+            select(UserSurvey)
+            .where(UserSurvey.user_id == user_id, UserSurvey.mode == 'coach')
+            .order_by(desc(UserSurvey.created_at))
+        )
         
-        if survey:
+        if is_adaptation and survey:
+            # При адаптации ОБНОВЛЯЕМ последнюю анкету
             survey.answers = answers
             survey.sub_mode = mode
+            flag_modified(survey, "answers") # Явно помечаем для алхимии, что JSON изменился
             survey_id = survey.id
         else:
-            new_survey = UserSurvey(user_id=user_id, mode="coach", sub_mode=mode, answers=answers, survey_config_id=1)
+            # Создаем новую анкету
+            new_survey = UserSurvey(
+                user_id=user_id, 
+                mode="coach", 
+                sub_mode=mode, 
+                answers=answers, 
+                survey_config_id=1
+            )
             session.add(new_survey)
             await session.flush()
             survey_id = new_survey.id
         
         await session.commit()
 
-    # 3. Отправка в AI
-    task = {"user_id": user_id, "mode": "coach", "sub_mode": mode, "answers": answers, "survey_id": survey_id, "is_adaptation": is_adaptation}
+    # 3. Отправка задачи в AI Worker
+    task = {
+        "user_id": user_id, 
+        "mode": "coach", 
+        "sub_mode": mode, 
+        "answers": answers, 
+        "survey_id": survey_id, 
+        "is_adaptation": is_adaptation
+    }
     await send_to_queue("q_ai_generation", task)
     
+    # 4. Завершение
     await state.set_state(CoachState.chatting)
     await state.update_data(is_adaptation=False)
+    
+    # Финальное уведомление (чтобы юзер не висел на экране загрузки)
+    await callback.message.answer(
+        "🚀 <b>Данные приняты!</b>\n\n"
+        "Я начал составлять ваш обновленный план. Это займет немного времени"
+        parse_mode="HTML"
+    )
+    await callback.answer()
 
 # --- ОТМЕНА ---
 @router.callback_query(F.data == "cancel_survey")
