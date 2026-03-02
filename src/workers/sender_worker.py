@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
 from aiogram.enums import ChatAction
 # Магия путей
+import re
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
 from src.utils.text import clean_html_for_telegram
 from src.config import settings
@@ -54,27 +55,71 @@ async def process_notification(message: aio_pika.IncomingMessage, bot: Bot):
                 await bot.send_chat_action(chat_id=user_id, action=ChatAction.TYPING)
             except: pass # Если не вышло (например, юзер заблочил), не прерываем отправку
             
-            # --- ОТПРАВКА ---
-            if photo:
-                # Если передан URL или file_id фото
-                await bot.send_photo(
-                    chat_id=user_id, 
-                    photo=photo, 
-                    caption=text, 
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.HTML
-                )
-            else:
-                await bot.send_message(
-                    chat_id=user_id, 
-                    text=text, 
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.HTML
-                )
+            # --- ЛОГИКА ОТПРАВКИ С РЕТРАЯМИ (3 попытки) ---
+            max_attempts = 3
+            success = False
+            
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    if photo:
+                        await bot.send_photo(
+                            chat_id=user_id, 
+                            photo=photo, 
+                            caption=text, 
+                            reply_markup=keyboard,
+                            parse_mode=ParseMode.HTML
+                        )
+                    else:
+                        await bot.send_message(
+                            chat_id=user_id, 
+                            text=text, 
+                            reply_markup=keyboard,
+                            parse_mode=ParseMode.HTML
+                        )
+                    success = True
+                    break  # Выходим из цикла, если отправилось
+                    
+                except TelegramBadRequest as e:
+                    # Если проблема в тегах (entities) — это наш "последний рубеж"
+                    if "can't parse entities" in str(e).lower() or "can't find end" in str(e).lower():
+                        log.warning("html_parse_failed_emergency_fallback", attempt=attempt, error=str(e))
+                        
+                        # ВЫРЕЗАЕМ ВСЕ ТЕГИ ПОД КОРЕНЬ
+                        plain_text = re.sub(r'<[^>]+>', '', text)
+                        
+                        # Украшаем для читаемости обычными символами (раз HTML нельзя)
+                        safe_text = f"📍 (Текстовая версия)\n{'-'*20}\n{plain_text}"
+                        
+                        # Пробуем отправить без parse_mode
+                        if photo:
+                            await bot.send_photo(chat_id=user_id, photo=photo, caption=safe_text, reply_markup=keyboard, parse_mode=None)
+                        else:
+                            await bot.send_message(chat_id=user_id, text=safe_text, reply_markup=keyboard, parse_mode=None)
+                        
+                        success = True
+                        break # Удалось отправить хоть так
 
-            # Метрика успеха
-            MESSAGES_SENT.labels(status="success").inc()
-            log.info("message_sent_successfully")
+                    # if "message is too long" in str(e).lower():
+                    #     text = text[:4000] + "..." # Принудительно режем
+                    #     # И пробуем отправить снова (или позволяем циклу попыток сработать)
+                    
+                    # Если ошибка в чем-то другом (например, сообщение слишком длинное)
+                    log.error("bad_request_not_format_related", error=str(e))
+                    raise e # Пробрасываем выше, чтобы сообщение не потерялось
+                
+                except (Exception, asyncio.TimeoutError) as e:
+                    # Если сетевая ошибка или временный глюк — ждем и пробуем снова
+                    if attempt < max_attempts:
+                        wait_time = attempt * 2 # 2сек, 4сек...
+                        log.warning("send_retry_triggered", attempt=attempt, wait=wait_time, error=str(e))
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        raise e # Если все попытки исчерпаны, пробрасываем в основной блок
+
+            if success:
+                MESSAGES_SENT.labels(status="success").inc()
+                log.info("message_sent_successfully")
 
         except TelegramRetryAfter as e:
             # Если словили Flood Limit (слишком много сообщений)

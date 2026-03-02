@@ -111,11 +111,17 @@ async def process_task(message: aio_pika.IncomingMessage):
                     
                     ai_raw = await generate_response(system_text, [{"role": "user", "content": user_instruction}])
 
-                    # 1. Сначала чистим ответ ИИ от мусора (ul, li, md)
+                    # 1. Сначала чистим
                     clean_text = clean_html_for_telegram(ai_raw)
+
+                    # 2. Сначала режем, если надо
                     if len(clean_text) > 3800:
-                        clean_text = clean_text[:3800] + "..."
-                    # 2. Только ПОТОМ оборачиваем в раскрывающуюся цитату
+                        clean_text = clean_text[:3800]
+                        # 3. ВАЖНО: После обрезки прогоняем через балансировщик ЕЩЕ РАЗ, 
+                        # чтобы закрыть теги, которые мы только что отрезали
+                        clean_text = clean_html_for_telegram(clean_text) + "..."
+
+                    # 4. И только в самом конце оборачиваем в глобальную цитату
                     formatted_plan = f"<blockquote expandable>{clean_text}</blockquote>"
 
                     await session.execute(
@@ -186,7 +192,12 @@ async def process_task(message: aio_pika.IncomingMessage):
 
                     # Чистим весь ответ для Telegram (наша функция clean_html_for_telegram справится)
                     clean_final_text = clean_html_for_telegram(final_text_for_user)
-
+                    if len(clean_final_text) > 3800:
+                        clean_final_text = clean_final_text[:3800]
+                        # 3. ВАЖНО: После обрезки прогоняем через балансировщик ЕЩЕ РАЗ, 
+                        # чтобы закрыть теги, которые мы только что отрезали
+                        clean_final_text = clean_html_for_telegram(clean_final_text) + "..."
+                        
                     if clean_final_text:
                         # Сохраняем в историю и отправляем
                         new_history = list(user.coach_history or [])
@@ -207,17 +218,20 @@ async def process_task(message: aio_pika.IncomingMessage):
                     prompt = prompt_template.format(json.dumps(answers, ensure_ascii=False))
 
                     ai_raw = await generate_response("Ты астролог", [{"role": "user", "content": prompt}])
+                    # 1. Сначала чистим
                     clean_text = clean_html_for_telegram(ai_raw)
-                    
-                    # --- ДОБАВЛЯЕМ ОБЕРТКУ ТУТ ---
-                    if len(clean_text) > 3800:
-                        clean_text = clean_text[:3800] + "..."
-                    
-                    formatted_natal = f"<blockquote expandable>{clean_text}</blockquote>"
-                    # -----------------------------
 
+                    # 2. Сначала режем, если надо
+                    if len(clean_text) > 3800:
+                        clean_text = clean_text[:3800]
+                        # 3. ВАЖНО: После обрезки прогоняем через балансировщик ЕЩЕ РАЗ, 
+                        # чтобы закрыть теги, которые мы только что отрезали
+                        clean_text = clean_html_for_telegram(clean_text) + "..."
+
+                    # 4. И только в самом конце оборачиваем в глобальную цитату
+                    formatted_natal = f"<blockquote expandable>{clean_text}</blockquote>"
                     await session.execute(
-                        update(UserSurvey).where(UserSurvey.id == survey_id).values(ai_recommendation=formatted_natal)
+                        update(UserSurvey).where(UserSurvey.id == survey_id).values(ai_recommendation=formatted_natal) 
                     )
                     await session.commit()
 
