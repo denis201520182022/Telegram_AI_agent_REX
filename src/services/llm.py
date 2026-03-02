@@ -26,7 +26,7 @@ proxy_url = (
 
 http_client = httpx.AsyncClient(
     proxy=proxy_url,
-    timeout=60.0,
+    timeout=600.0,
     verify=True 
 )
 
