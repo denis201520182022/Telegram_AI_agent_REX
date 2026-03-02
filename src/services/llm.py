@@ -90,10 +90,14 @@ async def generate_response(system_prompt: str, history: Union[List[Dict[str, st
         LLM_API_DURATION.observe(duration)
         
         content = response.choices[0].message.content
+        duration = time.time() - start_time # Пересчитываем или используем существующий
         
         if not content:
             log.warning("llm_returned_empty_string", duration=duration)
             return "" 
+
+        # ДОБАВЬ ЭТУ СТРОКУ:
+        log.info("llm_request_success", duration=round(duration, 2), tokens_limit=2000)
 
         return content
 
