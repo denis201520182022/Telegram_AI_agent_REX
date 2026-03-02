@@ -82,22 +82,17 @@ async def process_task(message: aio_pika.IncomingMessage):
                     is_adaptation = task.get('is_adaptation', False)
 
                     user = await session.get(User, user_id)
-                    if not user:
-                        log.error("user_not_found", user_id=user_id)
-                        return
+                    # Находим последнюю анкету, чтобы взять из неё текущий план
+                    survey = await session.get(UserSurvey, survey_id) 
 
                     old_plan_context = ""
-                    if is_adaptation and user and user.coach_history:
-                        for msg in reversed(user.coach_history):
-                            if msg.get('role') == 'assistant' and "<b>" in msg.get('content', ''):
-                                old_plan_context = f"\n\nТЕКУЩИЙ ПЛАН КЛИЕНТА (нужно адаптировать):\n{msg['content']}"
-                                break
+                    # Если это адаптация и у нас есть старый план в базе
+                    if is_adaptation and survey and survey.current_plan:
+                        old_plan_context = f"\n\nТЕКУЩИЙ ПЛАН КЛИЕНТА (нужно адаптировать):\n{survey.current_plan}"
 
-                    # ИЗМЕНЕНИЕ ЗДЕСЬ: Формируем ключ динамически (coach_nutrition, coach_workout...)
                     prompt_key = f"coach_{sub_mode}"
                     system_prompt_template = await _get_prompt(prompt_key)
 
-                    # Убираем role_instruction, так как роль теперь внутри system_prompt_template
                     system_text = (
                         f"{system_prompt_template}\n\n"
                         f"ДАННЫЕ АНКЕТЫ: {json.dumps(answers, ensure_ascii=False)}.\n"
@@ -253,7 +248,7 @@ async def process_task(message: aio_pika.IncomingMessage):
                     answers = survey.answers if survey else {}
                     
                     # Берем актуальную историю
-                    history_for_api = list(user.coach_history) if user.coach_history else []
+                    history_for_api = list(user.coach_history[-10:]) if user.coach_history else []
 
                     sub_mode = user.coach_mode or "combined"
                     prompt_key = f"coach_{sub_mode}"
