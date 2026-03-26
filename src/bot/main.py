@@ -7,7 +7,7 @@ from os.path import abspath, dirname
 
 # --- НАСТРОЙКА ПУТЕЙ ---
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
-
+from aiogram.client.session.aiohttp import AiohttpSession # <--- ДОБАВИТЬ ЭТУ СТРОКУ
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.filters import CommandStart, CommandObject
@@ -163,8 +163,18 @@ async def main():
     # Хранилище FSM в Redis
     storage = RedisStorage(redis=redis_client)
     
+    # --- НАСТРОЙКА ПРОКСИ ---
+    # Формируем URL из твоих данных (http://user:password@ip:port)
+    proxy_url = (
+        f"http://{settings.SQUID_PROXY_USER}:{settings.SQUID_PROXY_PASSWORD}@"
+        f"{settings.SQUID_PROXY_HOST}:{settings.SQUID_PROXY_PORT}"
+    )
+    session = AiohttpSession(proxy=proxy_url)
+    # ------------------------
+    
     bot = Bot(
-        token=settings.BOT_TOKEN.get_secret_value(), 
+        token=settings.BOT_TOKEN.get_secret_value(),
+        session=session,  # <--- ПЕРЕДАЕМ СЕССИЮ С ПРОКСИ СЮДА
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     dp = Dispatcher(storage=storage)
