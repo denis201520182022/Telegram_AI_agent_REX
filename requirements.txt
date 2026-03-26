@@ -29,7 +29,7 @@ python-dotenv>=1.0.0
 structlog>=24.1.0
 prometheus-client>=0.17.0
 pytz==2023.3
-
+aiohttp-socks>=0.8.0
 
 
 
