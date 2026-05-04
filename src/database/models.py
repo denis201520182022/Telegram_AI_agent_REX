@@ -101,6 +101,10 @@ class UserSurvey(Base):
     
     # НОВОЕ ПОЛЕ: Текущий активный план, который ИИ должен учитывать
     current_plan: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # НОВОЕ ПОЛЕ: План в виде чистого JSON (структура PlanSection)
+    # Именно это поле мы будем скармливать ИИ как "память"
+    current_plan_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     
     created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now())
     

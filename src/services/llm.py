@@ -1,17 +1,20 @@
-# src/services/llm.py
-
 import httpx
 import time
 import json
-from typing import List, Dict, Union, Any # Добавил Union и Any
+import asyncio
+from typing import List, Dict, Union, Any, Type, TypeVar
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 from prometheus_client import Histogram
-from src.config import settings
 
-# --- OBSERVABILITY ---
+from src.config import settings
 from src.utils.logger import logger
 from src.utils.alerting import send_alert
 from src.utils.metrics import SYSTEM_ERRORS
+from src.utils.llm_logging import log_llm_chat  # Убедитесь, что этот файл создан
+
+# Типизация для структурированного вывода
+T = TypeVar("T", bound=BaseModel)
 
 LLM_API_DURATION = Histogram(
     'rex_llm_api_request_duration_seconds',
@@ -32,81 +35,120 @@ http_client = httpx.AsyncClient(
 
 client = AsyncOpenAI(
     api_key=settings.OPENAI_API_KEY.get_secret_value(),
-    #base_url="https://api.groq.com/openai/v1",
     http_client=http_client
 )
 
-# Обновил аннотацию типов, чтобы Python знал, что может прийти что угодно
-async def generate_response(system_prompt: str, history: Union[List[Dict[str, str]], str, Any]) -> str:
+def _prepare_history(history: Union[List[Dict[str, str]], str, Any]) -> List[Dict[str, str]]:
+    """Вспомогательный метод для защиты от неверных типов входных данных."""
+    if isinstance(history, str):
+        try:
+            parsed = json.loads(history)
+            return parsed if isinstance(parsed, list) else [{"role": "user", "content": str(history)}]
+        except json.JSONDecodeError:
+            return [{"role": "user", "content": history}]
+    elif history is None:
+        return []
+    elif isinstance(history, list):
+        return history
+    return []
+
+# --- 1. КЛАССИЧЕСКАЯ ГЕНЕРАЦИЯ (ТЕКСТ) ---
+async def generate_response(system_prompt: str, history: Union[List[Dict[str, str]], str, Any], user_id: int = None) -> str:
     """
-    Генерация ответа через Groq (Llama-3.3).
-    Автоматически исправляет формат history, если пришла строка.
+    Генерация обычного текстового ответа.
+    Используется для натальных карт, трекинга и простых запросов.
     """
     start_time = time.time()
     MODEL_NAME = "gpt-4o-mini"
-    #MODEL_NAME = "llama-3.3-70b-versatile" 
-    
-    log = logger.bind(service="llm_client", provider="groq", model=MODEL_NAME)
+    log = logger.bind(service="llm_client", model=MODEL_NAME, user_id=user_id)
 
-    # --- БЛОК ЗАЩИТЫ (FIX TYPE ERROR) ---
-    # Проверяем, что нам пришло в history, и приводим к списку
-    if isinstance(history, str):
-        try:
-            # Если это JSON-строка (например '[{"role":...}]'), парсим её
-            parsed_history = json.loads(history)
-            if isinstance(parsed_history, list):
-                history = parsed_history
-            else:
-                # Если распарсилось не в список, а в dict или что-то еще
-                history = [{"role": "user", "content": str(history)}]
-        except json.JSONDecodeError:
-            # Если это просто текст, оборачиваем его в структуру сообщения
-            history = [{"role": "user", "content": history}]
-            
-    elif history is None:
-        history = []
-        
-    elif not isinstance(history, list):
-        # Если пришел какой-то мусор (не список и не строка)
-        history = []
-    # ------------------------------------
+    clean_history = _prepare_history(history)
 
     try:
-        # Теперь history гарантированно список, и сложение не упадет
-        messages_to_send = [{"role": "system", "content": system_prompt}] + history
+        messages_to_send = [{"role": "system", "content": system_prompt}] + clean_history
         
-        # Логируем payload для отладки (чтобы видеть, что уходит)
-        log.info("llm_payload_debug", payload_preview=str(messages_to_send)[:500])
-
         response = await client.chat.completions.create(
             model=MODEL_NAME,
             messages=messages_to_send,
             temperature=0.7,
-            max_tokens=2000,
+            max_tokens=3000,
             stream=False
         )
         
+        content = response.choices[0].message.content
         duration = time.time() - start_time
         LLM_API_DURATION.observe(duration)
-        
-        content = response.choices[0].message.content
-        duration = time.time() - start_time # Пересчитываем или используем существующий
         
         if not content:
             log.warning("llm_returned_empty_string", duration=duration)
             return "" 
 
-        # ДОБАВЬ ЭТУ СТРОКУ:
-        log.info("llm_request_success", duration=round(duration, 2), tokens_limit=2000)
+        # Детальное логирование в файл (через поток, чтобы не блокировать event loop)
+        if user_id:
+            try:
+                await asyncio.to_thread(log_llm_chat, user_id, system_prompt, clean_history, content)
+            except Exception as le:
+                log.error("llm_log_file_error", error=str(le))
 
+        log.info("llm_request_success", duration=round(duration, 2))
         return content
 
     except Exception as e:
-        duration = time.time() - start_time
-        error_msg = str(e)
-        
-        log.error("llm_request_failed", error=error_msg, duration=duration)
+        log.error("llm_request_failed", error=str(e))
         SYSTEM_ERRORS.labels(service="llm", error_type=type(e).__name__).inc()
-        await send_alert(e, context=f"LLM Service via Proxy ({MODEL_NAME})") # Можно временно отключить алерт, чтобы не спамил
+        await send_alert(e, context=f"LLM Text Critical ({MODEL_NAME}) | User: {user_id}")
+        raise e
+
+# --- 2. СТРУКТУРИРОВАННАЯ ГЕНЕРАЦИЯ (JSON / PYDANTIC) ---
+async def generate_structured_response(
+    system_prompt: str, 
+    history: Union[List[Dict[str, str]], str, Any], 
+    response_model: Type[T],
+    user_id: int = None
+) -> T:
+    """
+    Генерация строго структурированного ответа по Pydantic схеме.
+    Использует OpenAI Structured Outputs (beta.chat.completions.parse).
+    """
+    start_time = time.time()
+    # Метод .parse работает стабильнее всего на моделях gpt-4o-2024-08-06 и gpt-4o-mini
+    MODEL_NAME = "gpt-4o-mini" 
+    log = logger.bind(service="llm_structured", model=MODEL_NAME, user_id=user_id)
+
+    clean_history = _prepare_history(history)
+
+    try:
+        completion = await client.beta.chat.completions.parse(
+            model=MODEL_NAME,
+            messages=[{"role": "system", "content": system_prompt}] + clean_history,
+            response_format=response_model,
+            temperature=0.7
+        )
+
+        message = completion.choices[0].message
+
+        # Обработка отказа модели (Safety Refusal)
+        if message.refusal:
+            log.warning("llm_structured_refusal", refusal=message.refusal)
+            raise Exception(f"AI Refusal: {message.refusal}")
+
+        parsed_object = message.parsed
         
+        duration = time.time() - start_time
+        LLM_API_DURATION.observe(duration)
+
+        # Логируем результат в файл
+        if user_id:
+            try:
+                raw_json = parsed_object.model_dump_json(indent=2)
+                await asyncio.to_thread(log_llm_chat, user_id, system_prompt, clean_history, raw_json)
+            except: pass
+
+        log.info("llm_structured_success", duration=round(duration, 2))
+        return parsed_object
+
+    except Exception as e:
+        log.error("llm_structured_failed", error=str(e))
+        SYSTEM_ERRORS.labels(service="llm_structured", error_type=type(e).__name__).inc()
+        await send_alert(e, context=f"LLM Structured Error ({MODEL_NAME}) | User: {user_id}")
         raise e

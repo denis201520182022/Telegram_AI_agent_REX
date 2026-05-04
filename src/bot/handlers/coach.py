@@ -27,33 +27,32 @@ router = Router()
 
 @router.message(CoachState.chatting, F.text == "📋 Мой план")
 async def get_current_plan_btn(message: Message, state: FSMContext):
-    # 1. Скрываем действие: удаляем сообщение пользователя "📋 Мой план"
-    # try:
-    #     #await message.delete()
-    # except:
-    #     pass
-
-    # 2. Твоя секретная инструкция для ИИ
+    """
+    Кнопка запроса плана. 
+    Инжектит системную команду, чтобы ИИ вернул структурированный объект плана.
+    """
+    # Новая инструкция: просим заполнить поля Pydantic-схемы, а не расставлять теги
     system_instruction = (
-        "Пользователь запрашивает свой текущий план. "
-        "Твоя задача: поставь тег [UPDATE_PLAN] и сразу после него выдай ПОЛНУЮ версию плана в HTML "
-        "внутри тега <blockquote expandable>. "
-        "Опирайся на последнюю версию плана и историю правок."
+        "[SYSTEM COMMAND] Пользователь хочет увидеть свой текущий план. "
+        "Твоя задача: сформируй ответ, обязательно заполнив массив 'plan_sections' ПОЛНЫМИ данными "
+        "актуального плана из контекста, и установи флаг 'plan_update_required': true. "
+        "В поле 'message_to_user' напиши короткую поддерживающую фразу."
     )
 
-    # 3. Отправляем задачу в AI Worker (режим chat, но с нашей инструкцией)
-    # Мы добавляем эту инструкцию в историю сообщений как будто её написал юзер
     async with async_session_maker() as session:
         user = await session.get(User, message.from_user.id)
         if user:
+            # Создаем копию истории и добавляем команду
             new_history = list(user.coach_history) if user.coach_history else []
             new_history.append({"role": "user", "content": system_instruction})
             user.coach_history = new_history
             
+            # Сообщаем SQLAlchemy, что JSON изменился
             flag_modified(user, "coach_history")
             await session.commit()
 
-    # Пушим задачу воркеру
+    # Отправляем стандартную задачу в очередь. 
+    # AI воркер увидит историю с нашей командой и вызовет generate_structured_response
     await send_to_queue("q_ai_generation", {
         "user_id": message.from_user.id,
         "mode": "chat"
