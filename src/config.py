@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # --- Google ---
     GOOGLE_CREDENTIALS_FILE: str
     GOOGLE_SHEET_ID: str
+    GOOGLE_DOC_ID: str
 
     # --- LLM ---
     OPENAI_API_KEY: SecretStr

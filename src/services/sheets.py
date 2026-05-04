@@ -29,11 +29,6 @@ async def fetch_all_data():
     """
     Синхронизация данных из Google Таблиц.
     Лист 1: Вопросы анкет (Коуч, Дейтинг, Натальная карта).
-    Лист 2 (Prompts): Системные инструкции для ИИ.
-    
-    Структура колонок Листа 1:
-    category | key | type | text | options
-    (Например: common | name | text | Как тебя зовут? | )
     """
     log = logger.bind(service="google_sheets")
     start_time = time.time()
@@ -73,41 +68,17 @@ async def fetch_all_data():
                     "options": options
                 })
 
-        # --- 2. ПАРСИНГ ПРОМПТОВ (Лист 2 / "Prompts") ---
-        try:
-            ws_prompts = await sh.worksheet("Prompts")
-        except Exception:
-            # Если лист "Prompts" не найден по имени, берем второй по индексу
-            try:
-                ws_prompts = await sh.get_worksheet(1)
-            except Exception:
-                ws_prompts = None
-
-        prompts = {}
-        if ws_prompts:
-            rows_p = await ws_prompts.get_all_values()
-            if rows_p:
-                for r in rows_p[1:]: 
-                    # Ожидаем: mode | prompt_text
-                    if len(r) < 2 or not r[0] or not r[1]: 
-                        continue
-                    mode = r[0].strip().lower() 
-                    text = r[1].strip()
-                    prompts[mode] = text
-
         duration = time.time() - start_time
         log.info(
             "sheets_fetch_success", 
             duration=round(duration, 2), 
-            total_questions=len(questions),
-            prompts_found=list(prompts.keys())
+            total_questions=len(questions)
         )
         
-        return questions, prompts
+        return questions
 
     except Exception as e:
         log.error("sheets_fetch_failed", error=str(e))
         SYSTEM_ERRORS.labels(service="google_sheets", error_type=type(e).__name__).inc()
         await send_alert(e, context="Google Sheets Sync Critical Failure")
-        # Пробрасываем ошибку выше, чтобы воркер scheduler.py мог её залогировать
         raise e
