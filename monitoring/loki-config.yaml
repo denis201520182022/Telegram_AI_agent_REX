@@ -14,6 +14,16 @@ common:
     kvstore:
       store: inmemory
 
+limits_config:
+  retention_period: 168h # Храним логи 7 дней
+
+compactor:
+  working_directory: /loki/retention
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 150
+
 schema_config:
   configs:
     - from: 2020-10-24

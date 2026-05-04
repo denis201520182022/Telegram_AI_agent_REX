@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # 1. База данных (Postgres)
   postgres_db:
@@ -10,11 +16,22 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-rex_db}
       POSTGRES_HOST_AUTH_METHOD: trust 
     ports:
-      # ПРИВЯЗЫВАЕМ К LOCALHOST. Теперь ваш SSH-туннель будет работать, 
-      # но из интернета напрямую к базе никто не подключится.
       - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          memory: 256M
+    logging: *default-logging
 
   # Пулер соединений
   pgbouncer:
@@ -29,80 +46,181 @@ services:
       - MAX_CLIENT_CONN=1000
       - DEFAULT_POOL_SIZE=20
       - AUTH_TYPE=trust 
-    # ports: <-- УДАЛЯЕМ (внешний доступ не нужен, бот общается внутри сети Docker)
     depends_on:
-      - postgres_db
+      postgres_db:
+        condition: service_healthy
     restart: always
+    healthcheck:
+      # Проверка порта 6432 (стандартный для pgbouncer)
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 6432 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    logging: *default-logging
 
   # 2. Очереди (RabbitMQ)
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rex_rabbitmq
     restart: always
-    # ports: <-- УДАЛЯЕМ (внешний доступ не нужен, всё общение внутри Docker)
     volumes:
       - rabbit_data:/var/lib/rabbitmq
     environment:
       RABBITMQ_PROMETHEUS_RETURN_PER_OBJECT_METRICS: "true"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          memory: 512M
+    logging: *default-logging
 
   # 3. Кэш (Redis)
   redis:
     image: redis:7-alpine
     container_name: rex_redis
     restart: always
-    # Гарантируем, что он всегда Мастер и очищаем следы взлома
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--replicaof", "no", "one"]
-    # ports: <-- УДАЛЯЕМ (внешний доступ НЕ НУЖЕН СОВСЕМ)
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          memory: 128M
+    logging: *default-logging
 
   # --- ПРИЛОЖЕНИЕ (PYTHON) ---
-  # У всех воркеров и бота удаляем ports (у вас их и не было, это правильно)
+  # Все воркеры теперь зависят от ПОЛНОГО стека инфраструктуры
   bot_polling:
     build: .
     container_name: rex_bot
     restart: always
+    init: true
     command: python -m src.bot.main
     env_file:
       - .env
     depends_on:
-      - postgres_db
-      - redis
-      - rabbitmq
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    logging: *default-logging
 
   worker_ai:
     build: .
     container_name: rex_worker_ai
-    restart: always
+    restart: on-failure
+    init: true
     command: python -m src.workers.ai_worker
     env_file:
       - .env
     depends_on:
-      - postgres_db
-      - redis
-      - rabbitmq
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    logging: *default-logging
 
   worker_sender:
     build: .
     container_name: rex_worker_sender
-    restart: always
+    restart: on-failure
+    init: true
     command: python -m src.workers.sender_worker
     env_file:
       - .env
     depends_on:
-      - rabbitmq
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
+    logging: *default-logging
 
   worker_scheduler:
     build: .
     container_name: rex_scheduler
     restart: always
+    init: true
     command: python -m src.workers.scheduler
     env_file:
       - .env
     depends_on:
-      - postgres_db
-      - redis
-      - rabbitmq
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
+    logging: *default-logging
+
+  # --- EXPORTERS ---
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter
+    container_name: rex_postgres_exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres_db:5432/${POSTGRES_DB:-rex_db}?sslmode=disable"
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+    restart: always
+    logging: *default-logging
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: rex_redis_exporter
+    environment:
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    logging: *default-logging
 
   # --- МОНИТОРИНГ ---
   loki:
@@ -112,6 +230,12 @@ services:
     volumes:
       - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml
     restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    logging: *default-logging
 
   promtail:
     image: grafana/promtail:2.9.2
@@ -124,20 +248,30 @@ services:
     restart: always
     depends_on:
       - loki
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 128M
+    logging: *default-logging
 
   prometheus:
     image: prom/prometheus:v2.45.0
     container_name: rex_prometheus
-    # ports: <-- УДАЛЯЕМ (Grafana забирает метрики внутри сети Docker)
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
     restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+    logging: *default-logging
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.47.2
     container_name: rex_cadvisor
-    # ports: <-- УДАЛЯЕМ (Prometheus забирает метрики внутри сети Docker)
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
@@ -145,8 +279,13 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
     restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 300M
+    logging: *default-logging
 
-  # 12. Grafana (ЕДИНСТВЕННОЕ, ЧТО ОСТАЕТСЯ ОТКРЫТЫМ)
   grafana:
     image: grafana/grafana:10.1.0
     container_name: rex_grafana
@@ -160,6 +299,12 @@ services:
     depends_on:
       - prometheus
       - loki
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    logging: *default-logging
 
 volumes:
   postgres_data:

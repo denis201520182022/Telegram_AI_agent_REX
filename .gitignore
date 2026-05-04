@@ -1,21 +1,72 @@
-# Python
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
-venv/
-.env
-.idea/
-.vscode/
-*.log
-migrations/versions/
-# OS
-Thumbs.db
-Desktop.ini
-.env.docker
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Docker
+# --- Environments ---
+.env
+.env.*
+!.env.example
+venv/
+ENV/
+env/
+.venv/
+
+# --- Database ---
+*.db
+*.sqlite3
+# Alembic
+migrations/__pycache__/
+# We DO NOT ignore migrations/versions/ as they are part of the codebase
+# Но можем игнорировать временные файлы alembic, если они появятся
+
+# --- Secrets & Keys ---
+*.json
+!google_key.json.example
+!package.json
+google_key.json
+*.pem
+*.key
+
+# --- Logging & Monitoring ---
+*.log
+monitoring/data/
 .docker_data/
 
-README.md
-qr_codes_BATCH_001_TEST.csv
-google_key.json
+# --- Editors & IDEs ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.pydevproject
+.settings/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Project Specific ---
+qr_codes_*.csv
+!README.md
+!README2.md
