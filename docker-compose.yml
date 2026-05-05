@@ -118,6 +118,8 @@ services:
     command: python -m src.bot.main
     env_file:
       - .env
+    volumes:
+      - ./llm_logs:/app/llm_logs
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -140,6 +142,8 @@ services:
     command: python -m src.workers.ai_worker
     env_file:
       - .env
+    volumes:
+      - ./llm_logs:/app/llm_logs
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -184,6 +188,8 @@ services:
     command: python -m src.workers.scheduler
     env_file:
       - .env
+    volumes:
+      - ./llm_logs:/app/llm_logs
     depends_on:
       pgbouncer:
         condition: service_healthy
