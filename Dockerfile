@@ -3,10 +3,7 @@ FROM python:3.11-slim-bookworm as builder
 
 WORKDIR /app
 
-# Настройка зеркала для ускорения (Яндекс)
-RUN sed -i 's/deb.debian.org/mirror.yandex.ru/g' /etc/apt/sources.list
-
-# Устанавливаем зависимости для сборки бинарных пакетов
+# Устанавливаем зависимости для сборки бинарных пакетов (gcc, postgres и т.д.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
@@ -16,8 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Обновляем pip и копируем требования
 COPY requirements.txt .
 
-# Собираем wheels (бинарные пакеты) для всех зависимостей. 
-# УБРАН флаг --no-deps, чтобы подтянулись абсолютно все нужные пакеты.
+# Собираем wheels для всех зависимостей (включая все вложенные зависимости)
 RUN pip install -U pip && \
     pip wheel --no-cache-dir --wheel-dir /app/wheels -r requirements.txt
 
@@ -35,9 +31,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Создаем не-root пользователя
 RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
-# Устанавливаем системные библиотеки (runtime), нужные для работы базы и прокси
-RUN sed -i 's/deb.debian.org/mirror.yandex.ru/g' /etc/apt/sources.list \
-    && apt-get update && apt-get install -y --no-install-recommends \
+# Устанавливаем системные библиотеки для работы (libpq5 для Postgres, nc для healthcheck)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
@@ -45,21 +40,19 @@ RUN sed -i 's/deb.debian.org/mirror.yandex.ru/g' /etc/apt/sources.list \
 # Копируем собранные пакеты из стадии builder
 COPY --from=builder /app/wheels /wheels
 
-# Устанавливаем пакеты локально.
-# --no-index говорит не лезть в интернет, а --find-links берет всё из нашей папки.
+# Устанавливаем пакеты локально без обращения в интернет
 RUN pip install -U pip && \
     pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* && \
     rm -rf /wheels
 
-# Копируем исходный код проекта
+# Копируем проект
 COPY . .
 
-# Выставляем права доступа
+# Выставляем права
 RUN chown -R appuser:appgroup /app
 
 # Переключаемся на безопасного пользователя
 USER appuser
 
-# Команда запуска обычно переопределяется в docker-compose.yml, 
-# но здесь мы оставляем заглушку или основную точку входа.
+# Точка входа (может быть переопределена в docker-compose)
 CMD ["python", "-m", "src.bot.main"]
