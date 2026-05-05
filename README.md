@@ -52,3 +52,37 @@ docker exec -it rex_bot python -c "import asyncio; from src.services.rabbit impo
 
 
 
+
+
+
+
+А) Логи всей системы (все контейнеры сразу):
+
+   1 docker compose logs -f
+
+  Б) Логи только "приложения" (все воркеры и бот, без БД и очередей):
+
+   1 docker compose logs -f bot_polling worker_ai worker_sender worker_scheduler
+
+  В) Логи конкретного воркера:
+
+   1 # Только ИИ воркер
+   2 docker compose logs -f worker_ai
+   3
+   4 # Только планировщик
+   5 docker compose logs -f worker_scheduler
+   6
+   7 # Только основной бот
+   8 docker compose logs -f bot_polling
+
+  Г) Полезные фильтры:
+   * Последние 100 строк: docker compose logs --tail=100 -f worker_ai
+   * Логи за последние 10 минут: docker compose logs --since=10m -f
+
+
+Краткая шпаргалка по именам сервисов из вашего конфига:
+   1. bot_polling — Прием сообщений от юзеров.
+   2. worker_ai — Обработка запросов к OpenAI/Qwen.
+   3. worker_sender — Рассылка уведомлений.
+   4. worker_scheduler — Ежедневные задачи и трекинг.
+   5. rabbitmq — Если нужно проверить, почему сообщения не доходят.
