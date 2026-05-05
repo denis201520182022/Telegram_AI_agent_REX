@@ -5,7 +5,7 @@
 # --- Secrets ---
 .env
 .env.*
-google_key.json
+
 *.pem
 *.key
 
