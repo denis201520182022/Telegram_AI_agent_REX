@@ -29,11 +29,8 @@ async def process_notification(message: aio_pika.IncomingMessage, bot: Bot):
         try:
             data = json.loads(message.body)
             user_id = data['user_id']
-            raw_text = data.get('text', '') # Берем текст из очереди
+            text = data.get('text', '') # Берем текст из очереди «как есть», так как отправитель уже должен его подготовить
             
-            # ФИНАЛЬНАЯ ОЧИСТКА ПЕРЕД ТЕЛЕГРАМОМ
-            # Это спасет бота от падения, если ИИ протащил <ul> или другие теги
-            text = clean_html_for_telegram(raw_text)
             photo = data.get('photo')
             
             # Десериализуем клавиатуру из JSON обратно в объект aiogram

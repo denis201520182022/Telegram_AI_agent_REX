@@ -156,31 +156,55 @@ async def process_task(message: aio_pika.IncomingMessage):
                     # --- 2. ОБРАБОТКА И ОТПРАВКА ПЛАНА ---
                     rendered_plan_for_history = ""
                     if response_obj.plan_update_required and response_obj.plan_sections:
-                        # Генерируем HTML (функция вернет текст с эмодзи и структурой)
-                        new_plan_content = render_plan_to_html(response_obj.plan_sections)
-                        
-                        # Сохраняем в БД: и красивый HTML, и чистый JSON
+                        # Сохраняем в БД: чистый JSON
                         if survey:
-                            # Оборачиваем в expandable для БД
-                            final_html_db = f"<blockquote expandable>{new_plan_content}</blockquote>"
-                            survey.current_plan = final_html_db
                             survey.current_plan_json = [section.model_dump() for section in response_obj.plan_sections]
-                            flag_modified(survey, "current_plan_json") 
+                            flag_modified(survey, "current_plan_json")
+                            # HTML для БД сгенерируем один раз целиком
+                            full_plan_html = render_plan_to_html(response_obj.plan_sections)
+                            survey.current_plan = f"<blockquote expandable>{full_plan_html}</blockquote>"
                             await session.commit()
-                        
-                        # Дробим план для отправки, если он длинный
-                        # 3500 берем с запасом, чтобы влезли теги blockquote
-                        plan_chunks = [new_plan_content[i:i+3500] for i in range(0, len(new_plan_content), 3500)]
+
+                        # СМАРТ-ДРОБЛЕНИЕ ПО БЛОКАМ
+                        current_chunk_sections = []
+                        current_length = 0
+                        messages_to_send = []
+
+                        for section in response_obj.plan_sections:
+                            # Рендерим одну секцию, чтобы оценить её размер
+                            rendered_sec = render_plan_to_html([section])
+                            # Очищаем её (чтобы не было двойного экранирования позже)
+                            # Но так как render_plan_to_html уже создает теги <b> и т.д., 
+                            # мы должны быть уверены, что clean_html_for_telegram их не убьет.
+                            # На самом деле лучше очищать поля секции ДО рендеринга.
+                            
+                            sec_len = len(rendered_sec)
+
+                            if current_length + sec_len > 3500 and current_chunk_sections:
+                                # Отправляем накопленное
+                                messages_to_send.append(render_plan_to_html(current_chunk_sections))
+                                current_chunk_sections = [section]
+                                current_length = sec_len
+                            else:
+                                current_chunk_sections.append(section)
+                                current_length += sec_len + 2 # +2 для \n\n
+
+                        if current_chunk_sections:
+                            messages_to_send.append(render_plan_to_html(current_chunk_sections))
+
+                        # Отправка сформированных блоков
                         await asyncio.sleep(1.2)
-                        for i, p_chunk in enumerate(plan_chunks):
-                            # Каждый кусок плана оборачиваем в свою цитату
+                        for i, msg_text in enumerate(messages_to_send):
                             prefix = "✅ <b>Ваш план:</b>\n\n" if i == 0 else "<b>Продолжение плана:</b>\n\n"
-                            safe_p_chunk = clean_html_for_telegram(p_chunk)
+                            # ВАЖНО: Мы уже имеем HTML с тегами b, i, code. 
+                            # Нам нужно только сбалансировать их и закрыть возможные дыры.
+                            safe_p_chunk = clean_html_for_telegram(msg_text)
                             wrapped_chunk = f"{prefix}<blockquote expandable>{safe_p_chunk}</blockquote>"
                             
                             await send_to_queue("q_notifications", {"user_id": user_id, "text": wrapped_chunk})
                             await asyncio.sleep(1.0)
-                        rendered_plan_for_history = f"\n\n[ОБНОВЛЕННЫЙ ПЛАН]:\n{new_plan_content}"
+                        
+                        rendered_plan_for_history = f"\n\n[ОБНОВЛЕННЫЙ ПЛАН]:\n{render_plan_to_html(response_obj.plan_sections)}"
 
                     # --- 3. ОБНОВЛЕНИЕ ИСТОРИИ ДИАЛОГА ---
                     new_history = list(user.coach_history or [])

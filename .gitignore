@@ -11,6 +11,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+prompts.md
 lib64/
 parts/
 sdist/
