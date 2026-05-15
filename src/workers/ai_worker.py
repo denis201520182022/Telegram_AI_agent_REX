@@ -249,7 +249,6 @@ async def process_task(message: aio_pika.IncomingMessage):
                     })
 
                 # --- СЦЕНАРИЙ 4: ТРЕКИНГ ---
-                # --- СЦЕНАРИЙ 4: ТРЕКИНГ ---
                 elif mode == 'tracking_trigger':
                     user = await session.get(User, user_id)
                     if not user: return
@@ -267,24 +266,31 @@ async def process_task(message: aio_pika.IncomingMessage):
                     prompt_key = f"coach_{sub_mode}"
                     system_prompt_template = await _get_prompt(prompt_key)
 
-                    # 2. Теперь собираем финальный системный промпт
+                    # Собираем финальный системный промпт
                     system_prompt = (
                         f"{system_prompt_template}\n\n" 
                         f"ДАННЫЕ КЛИЕНТА: {json.dumps(answers, ensure_ascii=False)}.\n"
-                        f"ТЕКУЩИЙ ПЛАН: {current_plan}" # Используем переменную current_plan, созданную выше
+                        f"ТЕКУЩИЙ ПЛАН: {current_plan}"
                     )
  
-                    # Добавляем временную инструкцию для генерации (не сохраняем её в БД!)
+                    # Добавляем временную инструкцию для генерации
                     temp_history = history_for_api + [{
                         "role": "user",
-                        "content": "[SYSTEM COMMAND] Инициируй ежедневный трекинг. Коротко и заботливо спроси, как прошел мой день (или проходит, в зависимости от времени суток сейчас по Московскому времени) в контексте цели. Используй эмодзи. Максимум 2 предложения."
+                        "content": "[SYSTEM COMMAND] Инициируй ежедневный трекинг. Коротко и заботливо спроси у собеседника, как прошел его день, получилось ли придерживаться плана, может хочет внести какие то изменения в план и так далее. Отталкивайся от контекста диалога и цели клиента. Будь вариативен, не повторяйся. Используй уместные разнообразные эмодзи. Максимум 2 предложения."
                     }]
                     
-                    ai_raw = await generate_response(system_prompt, temp_history, user_id=user_id)
-                    clean_text = clean_html_for_telegram(ai_raw)
+                    # Используем СТРУКТУРИРОВАННУЮ генерацию, чтобы не парсить JSON руками
+                    response_obj = await generate_structured_response(
+                        system_prompt=system_prompt,
+                        history=temp_history,
+                        response_model=CoachResponse,
+                        user_id=user_id
+                    )
+                    
+                    clean_text = clean_html_for_telegram(response_obj.message_to_user)
                     
                     if clean_text:
-                        # СОХРАНЯЕМ В ИСТОРИЮ (теперь это начало нового витка диалога)
+                        # СОХРАНЯЕМ В ИСТОРИЮ
                         history_for_api.append({'role': 'assistant', 'content': clean_text})
                         user.coach_history = history_for_api
                         flag_modified(user, "coach_history")

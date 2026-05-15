@@ -7,7 +7,7 @@ import datetime
 import pytz
 from os.path import abspath, dirname
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, or_
 
 # --- НАСТРОЙКА ПУТЕЙ ---
 sys.path.insert(0, dirname(dirname(dirname(abspath(__file__)))))
@@ -23,6 +23,7 @@ from src.services.redis import redis_service
 from src.services.llm import generate_response
 from src.utils.text import clean_html_for_telegram
 from src.bot.states import CoachState
+from src.utils.admin import is_admin
 
 # OBSERVABILITY
 from src.utils.logger import logger
@@ -54,17 +55,20 @@ async def check_tracking_times():
 
 
     async with async_session_maker() as session:
-        # ЗАМЕНИТЕ ВАШУ СТРОКУ С (...) НА ЭТУ:
+        # Теперь выбираем тех, у кого включен трекинг + (подписка ИЛИ роль админа)
         stmt = select(User).where(
             and_(
                 User.is_tracking_enabled == True,
                 User.tracking_time.is_not(None),
-                User.subscription_expires_at > func.now()
+                or_(
+                    User.subscription_expires_at > func.now(),
+                    User.role == 'admin'
+                )
             )
         )
-        # -------------------------------------------
         
         users = (await session.execute(stmt)).scalars().all()
+        logger.info("tracking_candidates_found", count=len(users))
         
         triggered_count = 0
         for user in users:
@@ -78,19 +82,25 @@ async def check_tracking_times():
                     if await redis_service.get(lock_key):
                         continue
 
+                    logger.info("tracking_triggered", user_id=user.user_id, local_hour=user_local_time.hour)
+
                     # Отправляем задачу в AI воркер
                     await send_to_queue("q_ai_generation", {
                         "user_id": user.user_id,
                         "mode": "tracking_trigger" 
                     })
 
-                    # Принудительно ставим состояние chatting в Redis
+                    # ПРИНУДИТЕЛЬНО ставим состояние chatting в Redis
                     state_key = f"fsm:{user.user_id}:{user.user_id}:state"
                     await redis_service.client.set(state_key, CoachState.chatting.state)
                     
                     # Лочим отправку на этот день
                     await redis_service.set(lock_key, "1", ex=72000)
                     triggered_count += 1
+                else:
+                    # Можно добавить дебаг-лог, если нужно понять почему не сработало
+                    # logger.debug("tracking_hour_mismatch", user_id=user.user_id, user_hour=user.tracking_time.hour, local_hour=user_local_time.hour)
+                    pass
                     
             except Exception as loop_e:
                 logger.error("user_tracking_error", user_id=user.user_id, error=str(loop_e))

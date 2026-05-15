@@ -113,12 +113,12 @@ async def start_handler(message: Message, command: CommandObject):
             
             # Начисление бонусов (Натальная карта за каждые 5 кодов)
             bonus_msg = ""
-            if user.qr_activations_count % 5 == 0:
-                user.natal_chart_credits += 1
-                bonus_msg = "\n\n🌟 <b>Бонус!</b> Вы активировали 5-й код. Вам доступна 1 генерация Натальной карты!"
-            else:
-                left = 5 - (user.qr_activations_count % 5)
-                bonus_msg = f"\n\n<i>(Еще {left} активации до получения Натальной карты)</i>"
+            # if user.qr_activations_count % 5 == 0:
+            #     user.natal_chart_credits += 1
+            #     bonus_msg = "\n\n🌟 <b>Бонус!</b> Вы активировали 5-й код. Вам доступна 1 генерация Натальной карты!"
+            # else:
+            #     left = 5 - (user.qr_activations_count % 5)
+            #     bonus_msg = f"\n\n<i>(Еще {left} активации до получения Натальной карты)</i>"
             
             # Продление подписки (+5 дней за ЛЮБОЙ код, включая глобальный)
             days_to_add = datetime.timedelta(days=5)
